@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Terminal</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="status-bar">
+    <span id="status-indicator" class="disconnected"></span>
+    <span id="status-text">Disconnected</span>
+    <button id="settings-btn" title="Settings">⚙️</button>
+  </div>
+  <div id="terminal-container"></div>
+  
+  <!-- Settings Panel -->
+  <div id="settings-panel" class="hidden">
+    <div id="settings-content">
+      <div class="settings-header">
+        <h3>Terminal Settings</h3>
+        <button id="settings-close">✕</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-section">
+          <div class="settings-section-title">Session</div>
+          <div class="settings-field">
+            <label for="settings-session-name">Session Name</label>
+            <input type="text" id="settings-session-name" placeholder="(default - shared)">
+            <small>Leave empty for shared session, or name it (e.g., "frontend", "backend")</small>
+          </div>
+          <div class="settings-field">
+            <label for="settings-cwd">Working Directory</label>
+            <input type="text" id="settings-cwd" placeholder="~ (home directory)">
+            <small>Starting directory for <strong>new</strong> sessions (change session name to apply)</small>
+          </div>
+          <div class="session-id-display">
+            <span class="session-label">Current Session ID:</span>
+            <code id="current-session-id"></code>
+          </div>
+          <div class="settings-hint">
+            <small>💡 Different session names = independent terminals with separate settings</small>
+          </div>
+        </div>
+        
+        <div class="settings-section">
+          <div class="settings-section-title">Board Variables</div>
+          <div class="settings-field">
+            <label for="settings-board-url">Board URL</label>
+            <input type="text" id="settings-board-url" placeholder="https://miro.com/app/board/...">
+            <small>Variables like &lt;current_board&gt; will expand to this URL</small>
+          </div>
+          <div class="settings-field">
+            <label for="settings-board-name">Board Name</label>
+            <input type="text" id="settings-board-name" placeholder="My Board">
+            <small>Used for &lt;board_name&gt; variable</small>
+          </div>
+        </div>
+        
+        <div class="settings-info">
+          <strong>Available variables:</strong>
+          <ul>
+            <li><code>&lt;current_board&gt;</code> - Full board URL</li>
+            <li><code>&lt;board_id&gt;</code> - Board ID only</li>
+            <li><code>&lt;board_name&gt;</code> - Board name</li>
+            <li><code>&lt;viewport&gt;</code> - Current viewport (JSON: x, y, width, height)</li>
+            <li><code>&lt;input&gt;</code> - Content from items connected via Miro connectors</li>
+          </ul>
+        </div>
+      </div>
+      <div class="settings-footer">
+        <button id="settings-reset" class="btn-secondary">Reset to Default</button>
+        <button id="settings-save" class="btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { Terminal } from 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm';
+    import { FitAddon } from 'https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/+esm';
+
+    // Parse query parameters
+    const params = new URLSearchParams(window.location.search);
+    const sid = params.get('sid');
+    const token = params.get('token');
+    const cwd = params.get('cwd');
+    const name = params.get('name');
+
+    // Prevent zoom (Ctrl/Cmd + scroll) inside iframe from affecting parent Miro board.
+    // Scrolling without modifier continues to work for the terminal.
+    document.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey) e.preventDefault();
+    }, { passive: false });
+    
+    // Board info for variable expansion (passed from Miro app)
+    const defaultBoardId = params.get('boardId') || '';
+    const defaultBoardName = params.get('boardName') || '';
+    
+    // Unique embed ID from URL (shared when embed is copied)
+    const embedId = params.get('embedId') || '';
+
+    // Debug: last context fetch result (for console inspection)
+    let lastContextFetch = { at: null, input: '', named: {} };
+
+    // Base session ID (from URL, typically the board ID)
+    const baseSid = sid || defaultBoardId || 'default';
+    const baseKey = embedId || baseSid;
+    
+    // Settings key strategy:
+    // - Base settings stored in: terminal-settings-{baseKey}
+    // - Named session settings stored in: terminal-settings-{baseKey}-{sessionName}
+    // This means: same session name = same settings (intentional - same terminal)
+    //             different session name = different settings (different terminal)
+    
+    function getSettingsKeyForSession(sessionName) {
+      if (sessionName && sessionName.trim()) {
+        return `terminal-settings-${baseKey}-${sessionName.trim()}`;
+      }
+      return `terminal-settings-${baseKey}`;
+    }
+    
+    // Load settings - check window.name first (persists per-iframe across refresh)
+    function loadSettingsWithSessionKey() {
+      let sessionName = '';
+      
+      // Check window.name for our session (survives refresh, unique per iframe)
+      if (window.name && window.name.startsWith('terminal:')) {
+        sessionName = window.name.substring('terminal:'.length);
+        console.log('Found session in window.name:', sessionName);
+      }
+      
+      // If we have a session name, try to load session-specific settings
+      if (sessionName) {
+        const sessionKey = getSettingsKeyForSession(sessionName);
+        try {
+          const sessionData = localStorage.getItem(sessionKey);
+          if (sessionData) {
+            console.log('Loaded session-specific settings from:', sessionKey);
+            return { settings: JSON.parse(sessionData), key: sessionKey };
+          }
+        } catch (e) {
+          console.warn('Failed to load session settings:', e);
+        }
+      }
+      
+      // Fall back to base settings
+      try {
+        const baseData = localStorage.getItem(`terminal-settings-${baseKey}`);
+        if (baseData) {
+          const baseSettings = JSON.parse(baseData);
+          // If base has a session name and we didn't have one in window.name,
+          // try loading that session's settings
+          if (baseSettings.sessionName && !sessionName) {
+            const sessionKey = getSettingsKeyForSession(baseSettings.sessionName);
+            const sessionData = localStorage.getItem(sessionKey);
+            if (sessionData) {
+              // Store in window.name for future refreshes
+              window.name = `terminal:${baseSettings.sessionName}`;
+              return { settings: JSON.parse(sessionData), key: sessionKey };
+            }
+          }
+          return { settings: baseSettings, key: `terminal-settings-${baseKey}` };
+        }
+      } catch (e) {
+        console.warn('Failed to load base settings:', e);
+      }
+      
+      // Fall back to defaults
+      return {
+        settings: {
+          sessionName: '',
+          cwd: '',
+          boardUrl: defaultBoardId ? `https://miro.com/app/board/${defaultBoardId}/` : '',
+          boardName: defaultBoardName,
+          boardId: defaultBoardId
+        },
+        key: `terminal-settings-${baseKey}`
+      };
+    }
+    
+    // Initial load
+    const initialLoad = loadSettingsWithSessionKey();
+    let currentSettings = initialLoad.settings;
+    let SETTINGS_KEY = initialLoad.key;
+
+    // Apply embed URL params when present (terminal created with ?name=...&cwd=... from Miro)
+    const urlSessionName = params.get('name');
+    const urlCwd = params.get('cwd');
+    if ((urlSessionName !== null && urlSessionName !== '') || (urlCwd !== null && urlCwd !== '')) {
+      if (urlSessionName !== null && urlSessionName !== '') currentSettings.sessionName = urlSessionName;
+      if (urlCwd !== null && urlCwd !== '') currentSettings.cwd = urlCwd;
+      SETTINGS_KEY = getSettingsKeyForSession(currentSettings.sessionName);
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentSettings));
+        window.name = `terminal:${currentSettings.sessionName || ''}`;
+        console.log('Applied embed URL params: sessionName=', currentSettings.sessionName, 'cwd=', currentSettings.cwd);
+      } catch (e) { console.warn('Failed to persist URL params:', e); }
+    }
+
+    // Compute effective session ID based on session name
+    function getEffectiveSessionId(sessionName) {
+      if (sessionName && sessionName.trim()) {
+        return `${baseSid}-${sessionName.trim()}`;
+      }
+      return baseSid;
+    }
+
+    // Save settings to localStorage (uses session-specific key)
+    function saveSettings(settings, sessionName) {
+      try {
+        // Save to session-specific key
+        const key = getSettingsKeyForSession(sessionName);
+        localStorage.setItem(key, JSON.stringify(settings));
+        SETTINGS_KEY = key;
+        
+        // Store session name in window.name (persists across refresh, unique per iframe!)
+        window.name = `terminal:${sessionName || ''}`;
+        
+        console.log('Saved settings to:', key, 'window.name:', window.name);
+      } catch (e) {
+        console.warn('Failed to save settings:', e);
+      }
+    }
+
+    // Extract board ID from Miro URL
+    function extractBoardId(url) {
+      const match = url.match(/miro\.com\/app\/board\/([^\/\?]+)/);
+      return match ? match[1] : '';
+    }
+    
+    // Current effective session ID
+    let currentEffectiveSid = getEffectiveSessionId(currentSettings.sessionName);
+
+    // Status elements
+    const statusIndicator = document.getElementById('status-indicator');
+    const statusText = document.getElementById('status-text');
+
+    // Settings panel elements
+    const settingsBtn = document.getElementById('settings-btn');
+    const settingsPanel = document.getElementById('settings-panel');
+    const settingsClose = document.getElementById('settings-close');
+    const settingsSessionName = document.getElementById('settings-session-name');
+    const settingsCwd = document.getElementById('settings-cwd');
+    const settingsBoardUrl = document.getElementById('settings-board-url');
+    const settingsBoardName = document.getElementById('settings-board-name');
+    const settingsSave = document.getElementById('settings-save');
+    const settingsReset = document.getElementById('settings-reset');
+    const currentSessionIdDisplay = document.getElementById('current-session-id');
+
+    // Reconnect callback - will be set by connectToSession
+    let reconnectWithNewSession = null;
+
+    // Update session ID display
+    function updateSessionIdDisplay() {
+      if (currentSessionIdDisplay) {
+        currentSessionIdDisplay.textContent = currentEffectiveSid;
+      }
+    }
+
+    // Settings panel handlers
+    function openSettings() {
+      settingsSessionName.value = currentSettings.sessionName || '';
+      settingsCwd.value = currentSettings.cwd || '';
+      settingsBoardUrl.value = currentSettings.boardUrl || '';
+      settingsBoardName.value = currentSettings.boardName || '';
+      updateSessionIdDisplay();
+      settingsPanel.classList.remove('hidden');
+    }
+
+    function closeSettings() {
+      settingsPanel.classList.add('hidden');
+    }
+
+    function handleSaveSettings() {
+      const newSessionName = settingsSessionName.value.trim();
+      const newCwd = settingsCwd.value.trim();
+      const boardUrl = settingsBoardUrl.value.trim();
+      const boardId = extractBoardId(boardUrl) || boardUrl; // Allow raw ID too
+      
+      const oldSessionName = currentSettings.sessionName;
+      
+      currentSettings = {
+        sessionName: newSessionName,
+        cwd: newCwd,
+        boardUrl: boardUrl,
+        boardName: settingsBoardName.value.trim(),
+        boardId: boardId
+      };
+      
+      // Save to session-specific key (based on new session name)
+      saveSettings(currentSettings, newSessionName);
+      
+      // Check if session changed (name change requires reconnect)
+      const newEffectiveSid = getEffectiveSessionId(newSessionName);
+      if (newEffectiveSid !== currentEffectiveSid) {
+        currentEffectiveSid = newEffectiveSid;
+        console.log('Session changed, reconnecting to:', currentEffectiveSid);
+        
+        // Trigger reconnection with new session (will use new cwd)
+        if (reconnectWithNewSession) {
+          reconnectWithNewSession(currentEffectiveSid);
+        }
+      }
+      
+      closeSettings();
+      console.log('Settings saved:', currentSettings);
+    }
+
+    function handleResetSettings() {
+      // Remove current session-specific settings
+      localStorage.removeItem(SETTINGS_KEY);
+      
+      currentSettings = {
+        sessionName: '',
+        cwd: '',
+        boardUrl: defaultBoardId ? `https://miro.com/app/board/${defaultBoardId}/` : '',
+        boardName: defaultBoardName,
+        boardId: defaultBoardId
+      };
+      
+      // Reset the settings key to base
+      SETTINGS_KEY = `terminal-settings-${baseKey}`;
+      
+      settingsSessionName.value = '';
+      settingsCwd.value = '';
+      settingsBoardUrl.value = currentSettings.boardUrl;
+      settingsBoardName.value = currentSettings.boardName;
+      
+      // Update session ID
+      const newEffectiveSid = getEffectiveSessionId('');
+      currentSessionIdDisplay.textContent = newEffectiveSid;
+      
+      console.log('Settings reset to defaults:', currentSettings);
+    }
+
+    // Update session ID preview when typing
+    settingsSessionName?.addEventListener('input', () => {
+      const previewSid = getEffectiveSessionId(settingsSessionName.value.trim());
+      if (currentSessionIdDisplay) {
+        currentSessionIdDisplay.textContent = previewSid;
+      }
+    });
+
+    // Attach settings event listeners
+    settingsBtn.addEventListener('click', openSettings);
+    settingsClose.addEventListener('click', closeSettings);
+    settingsSave.addEventListener('click', handleSaveSettings);
+    settingsReset.addEventListener('click', handleResetSettings);
+    
+    // Close on click outside
+    settingsPanel.addEventListener('click', (e) => {
+      if (e.target === settingsPanel) {
+        closeSettings();
+      }
+    });
+    
+    // Close on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !settingsPanel.classList.contains('hidden')) {
+        closeSettings();
+      }
+    });
+
+    function setStatus(status, text) {
+      statusIndicator.className = status;
+      statusText.textContent = text;
+    }
+
+    function showError(message) {
+      setStatus('error', message);
+      const container = document.getElementById('terminal-container');
+      container.innerHTML = `<div class="error-message">${message}</div>`;
+    }
+
+    // Variable pattern highlighting decorator
+    class VariableHighlightAddon {
+      constructor() {
+        this.variablePattern = /<[^<>]+>/g;
+      }
+
+      activate(terminal) {
+        this.terminal = terminal;
+        // Register decoration on render
+        terminal.onRender(() => {
+          this.highlightVariables();
+        });
+      }
+
+      dispose() {
+        // Cleanup if needed
+      }
+
+      highlightVariables() {
+        // Note: xterm.js doesn't have native pattern highlighting
+        // We use a CSS-based approach with the decoration API
+        // For simplicity, we highlight using terminal styling when writing
+      }
+    }
+
+    // Create a custom write handler that highlights <...> patterns
+    function createHighlightedTerminal(term) {
+      const originalWrite = term.write.bind(term);
+      
+      // ANSI codes for highlighting
+      const highlightStart = '\x1b[38;5;214m\x1b[1m'; // Orange, bold
+      const highlightEnd = '\x1b[0m';
+      
+      term.writeWithHighlight = function(data) {
+        // Highlight <...> patterns in output
+        const highlighted = data.replace(/<([^<>]+)>/g, (match) => {
+          return `${highlightStart}${match}${highlightEnd}`;
+        });
+        originalWrite(highlighted);
+      };
+      
+      return term;
+    }
+
+    async function initTerminal() {
+      // Flow 1: If cwd provided but no sid, create new session
+      if (cwd && !sid) {
+        try {
+          setStatus('connecting', 'Creating session...');
+          const response = await fetch('/api/pty/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cwd, name })
+          });
+
+          if (!response.ok) {
+            throw new Error('Failed to create session');
+          }
+
+          const data = await response.json();
+          // Redirect to the returned URL
+          window.location.href = data.url;
+          return;
+        } catch (err) {
+          showError(`Failed to create session: ${err.message}`);
+          return;
+        }
+      }
+
+      // Flow 2: If sid provided, get a fresh token and connect
+      // Use the effective session ID (which may include session name)
+      if (sid || currentEffectiveSid) {
+        await startSession(currentEffectiveSid);
+        return;
+      }
+
+      // Flow 3: Missing required params
+      showError('Missing required parameters: sid or cwd');
+    }
+
+    // Start or reconnect to a session
+    async function startSession(sessionId) {
+      try {
+        setStatus('connecting', 'Connecting to session...');
+        
+        // Build request body with optional cwd
+        const requestBody = { sid: sessionId };
+        if (currentSettings.cwd) {
+          requestBody.cwd = currentSettings.cwd;
+        }
+        
+        // Get a fresh token for this session
+        const response = await fetch('/api/pty/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to start session');
+        }
+
+        const data = await response.json();
+        // Extract fresh token from the returned URL
+        const freshParams = new URLSearchParams(data.url.split('?')[1]);
+        const freshToken = freshParams.get('token');
+        
+        if (!freshToken) {
+          throw new Error('No token in response');
+        }
+
+        connectToSession(sessionId, freshToken);
+      } catch (err) {
+        showError(`Failed to connect: ${err.message}`);
+      }
+    }
+
+    // Track current connection for cleanup
+    let currentWs = null;
+    let currentTerm = null;
+    let shouldReconnect = true;
+
+    function connectToSession(sessionId, token) {
+      setStatus('connecting', 'Connecting...');
+
+      // Clean up existing connection
+      if (currentWs) {
+        shouldReconnect = false; // Prevent auto-reconnect during cleanup
+        currentWs.close();
+        currentWs = null;
+      }
+      if (currentTerm) {
+        currentTerm.dispose();
+        currentTerm = null;
+      }
+      shouldReconnect = true;
+
+      // Clear terminal container
+      const container = document.getElementById('terminal-container');
+      container.innerHTML = '';
+
+      // Initialize terminal
+      const term = new Terminal({
+        cursorBlink: true,
+        cursorStyle: 'block',
+        fontSize: 14,
+        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        theme: {
+          background: '#1e1e1e',
+          foreground: '#d4d4d4',
+          cursor: '#ffffff',
+          cursorAccent: '#1e1e1e',
+          selection: 'rgba(255, 255, 255, 0.3)',
+          black: '#000000',
+          red: '#cd3131',
+          green: '#0dbc79',
+          yellow: '#e5e510',
+          blue: '#2472c8',
+          magenta: '#bc3fbc',
+          cyan: '#11a8cd',
+          white: '#e5e5e5',
+          brightBlack: '#666666',
+          brightRed: '#f14c4c',
+          brightGreen: '#23d18b',
+          brightYellow: '#f5f543',
+          brightBlue: '#3b8eea',
+          brightMagenta: '#d670d6',
+          brightCyan: '#29b8db',
+          brightWhite: '#ffffff'
+        }
+      });
+
+      currentTerm = term;
+
+      const fitAddon = new FitAddon();
+      term.loadAddon(fitAddon);
+
+      // Enable highlighting
+      createHighlightedTerminal(term);
+
+      // Mount terminal
+      term.open(container);
+      fitAddon.fit();
+
+      // WebSocket connection
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProtocol}//${window.location.host}/pty?sid=${encodeURIComponent(sessionId)}&token=${encodeURIComponent(token)}`;
+      
+      let ws = null;
+      let reconnectAttempts = 0;
+      const maxReconnectAttempts = 5;
+      const reconnectDelay = 2000;
+
+      function connect() {
+        ws = new WebSocket(wsUrl);
+        currentWs = ws;
+
+        ws.onopen = () => {
+          setStatus('connected', `Connected (${currentSettings.sessionName || 'default'})`);
+          reconnectAttempts = 0;
+          
+          // Send initial resize
+          ws.send(JSON.stringify({
+            type: 'resize',
+            cols: term.cols,
+            rows: term.rows
+          }));
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            
+            switch (msg.type) {
+              case 'connected':
+                console.log('Session connected:', sessionId);
+                break;
+                
+              case 'data':
+                // Use highlighted write for output
+                term.writeWithHighlight(msg.data);
+                break;
+                
+              case 'error':
+                console.error('Server error:', msg.message);
+                setStatus('error', `Error: ${msg.message}`);
+                break;
+                
+              default:
+                console.warn('Unknown message type:', msg.type);
+            }
+          } catch (err) {
+            console.error('Error parsing message:', err);
+          }
+        };
+
+        ws.onclose = (event) => {
+          if (!shouldReconnect) return;
+          
+          setStatus('disconnected', 'Disconnected');
+          
+          // Attempt reconnect
+          if (reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++;
+            setStatus('connecting', `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`);
+            setTimeout(connect, reconnectDelay);
+          } else {
+            setStatus('error', 'Connection lost. Refresh to reconnect.');
+          }
+        };
+
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+        };
+      }
+
+      // Set up reconnect callback for settings changes
+      reconnectWithNewSession = async (newSessionId) => {
+        await startSession(newSessionId);
+      };
+
+      // Start connection
+      connect();
+
+      // Variable expansion - expand locally using board info from URL params
+      let inputBuffer = '';
+
+      /**
+       * Fetch full context (connected docs + viewport) from the terminal server.
+       * The Miro app panel pushes context there because postMessage can't
+       * cross between sibling Miro iframes (embed ↔ panel).
+       * When viewport is missing we signal "context requested" so the Miro app
+       * can push; we retry once after a short delay to pick it up.
+       */
+      async function requestContext() {
+        if (!embedId) {
+          console.warn('No embedId – cannot fetch context');
+          return { input: '', named: {}, viewport: null };
+        }
+
+        // Signal that this embed needs context; Miro app polls and will push.
+        try {
+          await fetch(`/api/context/${encodeURIComponent(embedId)}/request`, { method: 'POST' });
+        } catch (e) {
+          console.warn('Context request signal failed:', e);
+        }
+
+        let res = await fetch(`/api/context/${encodeURIComponent(embedId)}`);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch context: ${res.status}`);
+        }
+
+        let data = await res.json();
+        let input = data.input || '';
+        let named = data.named || {};
+        let viewport = data.viewport || null;
+
+        // If viewport not yet pushed, give Miro app time to respond then retry once.
+        if (!viewport) {
+          await new Promise(r => setTimeout(r, 1500));
+          res = await fetch(`/api/context/${encodeURIComponent(embedId)}`);
+          if (res.ok) {
+            data = await res.json();
+            input = data.input || '';
+            named = data.named || {};
+            viewport = data.viewport || null;
+          }
+        }
+
+        lastContextFetch = { at: new Date().toISOString(), input, named, viewport };
+        console.log('Fetched context: embedId=', embedId, 'input=', input.length, 'char(s), named=', Object.keys(named), 'viewport=', viewport ? 'yes' : 'no');
+        return { input, named, viewport };
+      }
+
+      // Browser console debug: run __terminalInputDebug() to inspect [INPUT]/[LABEL] context
+      window.__terminalInputDebug = function() {
+        console.group('[Terminal iframe] 🔍 context debug');
+        console.log('embedId (from URL):', embedId || '(missing – check embed URL)');
+        console.log('Last context fetch:', lastContextFetch.at);
+        console.log('Last input:', lastContextFetch.input);
+        console.log('Last named tokens:', lastContextFetch.named);
+        console.log('Full URL:', window.location.href);
+        console.groupEnd();
+      };
+      window.__terminalInputDebugFetch = async function() {
+        console.log('[Terminal iframe] Fetching context now...');
+        const result = await requestContext();
+        console.log('Result:', result);
+        return result;
+      };
+
+      /**
+       * Expand variables in input using current settings
+       * Supported variables:
+       * - <current_board> → full Miro board URL
+       * - <board_id> → just the board ID
+       * - <board_name> → board title
+       * - <viewport> → current viewport JSON (async fetch)
+       * - <selected_items> → (not available in embed, returns placeholder)
+       * - [INPUT] → text of unlabelled connected items, joined (async fetch)
+       * - [LABEL] → a specific connected item, addressed by its connector's
+       *   own caption (double-click the connector line to caption it); a
+       *   caption starting with "link" (e.g. [LINK_1]) resolves to that
+       *   item's board link instead of its content (async fetch, same
+       *   context fetch as [INPUT]).
+       */
+      const NAMED_TOKEN_PATTERN = /\[([A-Za-z][A-Za-z0-9_]*)\]/g;
+
+      /** Replace only [LABEL] tokens we actually have a value for — leaves any
+       * other bracketed text (glob patterns, array indices, ...) untouched.
+       * Re-scans its own output, since a substituted value can itself contain
+       * another token (e.g. a prompt sticky that says "...write it to
+       * [LINK_OUTPUT]") — a single `.replace()` pass never finds that, since
+       * it only matches against the original string. Capped so a token whose
+       * own value contains itself can't loop forever. */
+      const MAX_NAMED_TOKEN_PASSES = 5;
+      function expandNamedTokens(input, named) {
+        if (!named) return input;
+        let output = input;
+        for (let pass = 0; pass < MAX_NAMED_TOKEN_PASSES; pass++) {
+          let changed = false;
+          output = output.replace(NAMED_TOKEN_PATTERN, (match, label) => {
+            if (!Object.prototype.hasOwnProperty.call(named, label)) return match;
+            changed = true;
+            return named[label];
+          });
+          if (!changed) break;
+        }
+        return output;
+      }
+      function expandSyncVariables(input) {
+        let output = input;
+        
+        // Use current settings for board info
+        const { boardUrl, boardId, boardName } = currentSettings;
+        
+        // Replace <current_board> with full Miro board URL (brackets = shell-safe)
+        output = output.replace(/<current_board>/g, boardUrl || '[no-board-url]');
+        
+        // Replace <board_id> with just the board ID
+        output = output.replace(/<board_id>/g, boardId || '[no-board-id]');
+        
+        // Replace <board_name> with board name
+        output = output.replace(/<board_name>/g, boardName || '[no-board-name]');
+        
+        // Replace <selected_items> - not available in embed context
+        output = output.replace(/<selected_items>/g, '[selection-not-available]');
+        
+        if (output !== input) {
+          console.log('Sync variable expansion:', { input, output });
+        }
+        
+        return output;
+      }
+
+      /**
+       * Sync expansion plus safe placeholders for async vars. Use when we must not
+       * send raw <viewport> or [INPUT]/[LABEL] to the shell (e.g. fallback on error).
+       */
+      function expandSyncVariablesSafe(input) {
+        let output = expandSyncVariables(input);
+        output = output.replace(/<viewport>/gi, '[no-viewport]');
+        output = output.replace(/\[INPUT\]/g, '[no-connected-docs]');
+        return output;
+      }
+
+      /**
+       * Expand all variables including async ones like <viewport> and [INPUT]/[LABEL]
+       * Returns a promise that resolves with the fully expanded string
+       */
+      async function expandVariables(input) {
+        const hasNamedTokens = input.search(NAMED_TOKEN_PATTERN) !== -1;
+        const needsContext = /<viewport>/i.test(input) || hasNamedTokens;
+        let output = expandSyncVariables(input);
+
+        if (needsContext) {
+          try {
+            const { input: connectedText, named, viewport } = await requestContext();
+
+            if (/<viewport>/i.test(output)) {
+              const viewportStr = viewport && typeof viewport === 'object'
+                ? JSON.stringify({ x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height })
+                : '[no-viewport]';
+              output = output.replace(/<viewport>/gi, viewportStr);
+            }
+            // INPUT is a built-in token (the unlabelled-items blob); an explicit
+            // connector caption literally named "INPUT" takes priority over it.
+            const lookup = Object.assign({ INPUT: connectedText || '[no-connected-docs]' }, named);
+            output = expandNamedTokens(output, lookup);
+          } catch (error) {
+            console.error('Failed to fetch context:', error);
+            output = output.replace(/\[INPUT\]/g, '[error-fetching-input]');
+            output = output.replace(/<viewport>/gi, '[error-fetching-viewport]');
+          }
+        }
+
+        if (output !== input) {
+          console.log('Variable expansion:', { input, output });
+        }
+
+        return output;
+      }
+
+      // Check if input contains variables: <variable_name> or [LABEL]/[INPUT]
+      function containsVariables(input) {
+        return /<[a-z_]+>/i.test(input) || input.search(NAMED_TOKEN_PATTERN) !== -1;
+      }
+
+      // Check if input contains async variables that need fetching
+      function containsAsyncVariables(input) {
+        return /<viewport>/i.test(input) || input.search(NAMED_TOKEN_PATTERN) !== -1;
+      }
+
+      // Track if we're currently processing an async expansion
+      let isProcessingAsync = false;
+
+      // Handle terminal input with variable expansion
+      term.onData(async (data) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        // If we're processing async expansion, queue the input
+        if (isProcessingAsync) {
+          return;
+        }
+
+        // Check if Enter key pressed (carriage return)
+        if (data === '\r' || data === '\n') {
+          // Check if we need to expand variables
+          if (containsVariables(inputBuffer)) {
+            // Check if we have async variables that need fetching
+            if (containsAsyncVariables(inputBuffer)) {
+              isProcessingAsync = true;
+              try {
+                const expanded = await expandVariables(inputBuffer);
+                
+                // Clear the current line in shell (Ctrl+U kills line, then we send expanded)
+                ws.send(JSON.stringify({ type: 'input', data: '\x15' })); // Ctrl+U
+                
+                // Send the expanded command
+                ws.send(JSON.stringify({ type: 'input', data: expanded + '\r' }));
+              } catch (error) {
+                console.error('Error expanding variables:', error);
+                // Never send raw <...> to shell (causes redirection parse errors).
+                // Clear line and send safe expansion (async vars become placeholders).
+                const fallback = expandSyncVariablesSafe(inputBuffer);
+                ws.send(JSON.stringify({ type: 'input', data: '\x15' }));
+                ws.send(JSON.stringify({ type: 'input', data: fallback + '\r' }));
+              } finally {
+                isProcessingAsync = false;
+              }
+            } else {
+              // Sync-only variables (safe expand so we never send raw <viewport>/[INPUT] to shell)
+              const expanded = expandSyncVariablesSafe(inputBuffer);
+              
+              // Clear the current line in shell (Ctrl+U kills line, then we send expanded)
+              ws.send(JSON.stringify({ type: 'input', data: '\x15' })); // Ctrl+U
+              
+              // Send the expanded command
+              ws.send(JSON.stringify({ type: 'input', data: expanded + '\r' }));
+            }
+          } else {
+            // No variables, just send Enter
+            ws.send(JSON.stringify({ type: 'input', data: '\r' }));
+          }
+          
+          // Reset buffer
+          inputBuffer = '';
+        } else if (data === '\x7f' || data === '\b') {
+          // Backspace - remove last character from buffer
+          inputBuffer = inputBuffer.slice(0, -1);
+          ws.send(JSON.stringify({ type: 'input', data }));
+        } else if (data.charCodeAt(0) >= 32 || data === '\t') {
+          // Printable character or tab - add to buffer
+          inputBuffer += data;
+          ws.send(JSON.stringify({ type: 'input', data }));
+        } else {
+          // Control characters (Ctrl+C, etc.) - send directly, reset buffer
+          inputBuffer = '';
+          ws.send(JSON.stringify({ type: 'input', data }));
+        }
+      });
+
+      // Handle resize
+      const handleResize = () => {
+        fitAddon.fit();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'resize',
+            cols: term.cols,
+            rows: term.rows
+          }));
+        }
+      };
+
+      window.addEventListener('resize', handleResize);
+
+      // Also listen for ResizeObserver for iframe resizing
+      const resizeObserver = new ResizeObserver(() => {
+        handleResize();
+      });
+      resizeObserver.observe(container);
+
+      // Focus terminal
+      term.focus();
+    }
+
+    // Initialize on load
+    initTerminal();
+  </script>
+</body>
+</html>

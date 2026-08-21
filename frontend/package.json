@@ -1,0 +1,19 @@
+{
+  "name": "miro-terminal-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "pages:publish": "gh-pages -d terminal-wrapper -e terminal-wrapper"
+  },
+  "devDependencies": {
+    "@mirohq/websdk-types": "latest",
+    "gh-pages": "^6.1.1",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.0"
+  }
+}

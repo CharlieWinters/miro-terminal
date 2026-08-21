@@ -1,0 +1,21 @@
+{
+  "name": "miro-terminal-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PTY-based web terminal server for the Miro Terminal app. Runs on a plain Node host or container you control — node-pty spawns real OS processes, so this can never run on Cloudflare Workers.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "postinstall": "node scripts/fix-node-pty-permissions.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^4.18.2",
+    "node-pty": "^1.0.0",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
