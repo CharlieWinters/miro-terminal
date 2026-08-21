@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Miro IDE — Terminal</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #0f1419;
+      --card: #1a2332;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #3b8eea;
+      --border: #2d3a4d;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    #root { height: 100%; display: flex; flex-direction: column; }
+    #frame-wrap {
+      flex: 1;
+      min-height: 0;
+      display: none;
+    }
+    #frame-wrap.visible { display: block; }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      display: block;
+    }
+    #splash {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    #splash.hidden { display: none; }
+    .card {
+      max-width: 28rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem 1.35rem;
+      line-height: 1.55;
+    }
+    .card h1 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 0 0 0.65rem;
+    }
+    .card p { margin: 0 0 0.75rem; font-size: 0.9rem; color: var(--muted); }
+    .card p:last-child { margin-bottom: 0; }
+    .spinner {
+      width: 1.75rem;
+      height: 1.75rem;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .err { color: #f85149; font-size: 0.85rem; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="splash">
+      <div class="card" id="card">
+        <div class="spinner" id="spinner" aria-hidden="true"></div>
+        <h1 id="title">Checking local terminal…</h1>
+        <p id="body">
+          This page looks for the PTY server on your computer. If you are not the person
+          hosting the session, you will not connect—only a short message is shown.
+        </p>
+        <p class="err" id="err" hidden></p>
+      </div>
+    </div>
+    <div id="frame-wrap" class="frame-wrap">
+      <iframe id="term" title="Terminal" allow="clipboard-read; clipboard-write"></iframe>
+    </div>
+  </div>
+  <script>
+(function () {
+  var splash = document.getElementById('splash');
+  var frameWrap = document.getElementById('frame-wrap');
+  var term = document.getElementById('term');
+  var title = document.getElementById('title');
+  var body = document.getElementById('body');
+  var err = document.getElementById('err');
+  var spinner = document.getElementById('spinner');
+
+  function parseTerminalBase(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    var u;
+    try {
+      u = new URL(raw);
+    } catch (e) {
+      return null;
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    var h = u.hostname;
+    if (h !== 'localhost' && h !== '127.0.0.1' && h !== '[::1]') return null;
+    return u.origin;
+  }
+
+  function buildTerminalSrc(origin, forward) {
+    var path = '/terminal.html';
+    var q = forward.toString();
+    return q ? origin + path + '?' + q : origin + path;
+  }
+
+  var params = new URLSearchParams(window.location.search);
+  var terminalBase = parseTerminalBase(params.get('terminalBase'));
+  var forward = new URLSearchParams();
+  params.forEach(function (v, k) {
+    if (k === 'terminalBase') return;
+    forward.set(k, v);
+  });
+
+  if (!terminalBase) {
+    spinner.hidden = true;
+    title.textContent = 'Missing or invalid terminalBase';
+    body.textContent =
+      'Open this embed from the Miro IDE app. The link must include a terminalBase ' +
+      'pointing to http(s)://localhost, 127.0.0.1, or [::1] only.';
+    return;
+  }
+
+  var healthUrl = terminalBase + '/health';
+
+  fetch(healthUrl, { method: 'GET', mode: 'cors', cache: 'no-store' })
+    .then(function (res) {
+      if (!res.ok) throw new Error('Health returned ' + res.status);
+      return res.json();
+    })
+    .then(function () {
+      spinner.hidden = true;
+      splash.classList.add('hidden');
+      frameWrap.classList.add('visible');
+      term.src = buildTerminalSrc(terminalBase, forward);
+    })
+    .catch(function (e) {
+      spinner.hidden = true;
+      title.textContent = 'Terminal runs on another machine';
+      body.innerHTML =
+        'No PTY server responded at <strong>' +
+        terminalBase +
+        '</strong> from your browser. ' +
+        'A collaborator started this session on <em>their</em> computer—you can see the board, ' +
+        'but only they (or someone with the same server and session) can use this terminal. ' +
+        'If you are the host, start the terminal server locally (see project README), use HTTPS if the app requires it, then refresh the board.';
+      err.hidden = false;
+      err.textContent = e && e.message ? String(e.message) : 'Connection failed';
+    });
+})();
+  </script>
+</body>
+</html>

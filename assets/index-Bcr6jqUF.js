@@ -1,0 +1,1 @@
+import{i as o}from"./terminalEmbed-BYf4FoXc.js";async function i(){await miro.board.ui.on("icon:click",async()=>{await miro.board.ui.openPanel({url:"app.html"})}),o().catch(console.error)}i().catch(console.error);
