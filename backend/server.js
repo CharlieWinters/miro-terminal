@@ -75,6 +75,14 @@ app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && corsAllowOrigin(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
+    // Chrome's Private Network Access (PNA): a page loaded from a public
+    // origin (e.g. the github.io wrapper) needs this on top of normal CORS
+    // to be allowed to fetch a loopback/private address like localhost —
+    // regular Access-Control-Allow-Origin alone isn't enough. Without it,
+    // Chrome blocks the request itself with "Permission was denied ... to
+    // access the `loopback` address space" before this server even sees it
+    // as a CORS failure.
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
