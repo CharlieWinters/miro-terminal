@@ -1,13 +1,21 @@
 # Paste into the "App Manifest" section of your Miro app at
 # https://miro.com/app/settings/user-profile/apps/  (after creating an app).
-# Frontend is deployed via `npm run pages:publish` (frontend/package.json) to
-# https://charliewinters.github.io/miro-terminal/ — rebuild+republish after
-# any change to frontend/src or app.html/index.html.
+#
+# This app runs from YOUR OWN machine, alongside your backend — not hosted
+# publicly. Every panel/headless call talks to localhost, so it needs to
+# stay same-address-space (loopback) as the backend or Chrome's Private
+# Network Access policy blocks it; a publicly-hosted frontend fetching
+# localhost from inside Miro's iframe hits exactly that wall (see
+# ARCHITECTURE.md). Only the terminal-wrapper page (State A/B fallback,
+# shown to every OTHER viewer regardless of whose machine it is) needs to be
+# publicly hosted — that's still on GitHub Pages, unchanged.
+#
+# Run `cd frontend && npm run dev` and use whatever URL it prints below.
 
 appName: Miro Terminal
 sdkVersion: SDK_V2
 
-sdkUri: https://charliewinters.github.io/miro-terminal/index.html
+sdkUri: http://localhost:5173/index.html
 
 scopes:
   - boards:read
@@ -15,10 +23,11 @@ scopes:
   - identity:read
 
 redirectUris:
-  - https://charliewinters.github.io/miro-terminal/
+  - http://localhost:5173/
 
-# TODO: no icon has been designed/deployed yet — Miro's app settings form may
-# require one to save the manifest; a placeholder icon URL will just 404.
+# TODO: no icon has been designed yet — Miro's app settings form may require
+# one to save the manifest; a placeholder icon URL will just 404. Host a real
+# one (e.g. alongside the GitHub Pages wrapper) once designed.
 icons:
   - src: https://charliewinters.github.io/miro-terminal/icon.svg
     size: 24

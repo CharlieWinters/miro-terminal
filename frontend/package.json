@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "pages:publish": "npm run build && cp -r terminal-wrapper dist/terminal-wrapper && gh-pages -d dist"
+    "pages:publish": "gh-pages -d terminal-wrapper -e terminal-wrapper"
   },
   "devDependencies": {
     "@mirohq/websdk-types": "latest",

@@ -80,6 +80,17 @@
     import { Terminal } from 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm';
     import { FitAddon } from 'https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/+esm';
 
+    // Tell the parent (terminal-wrapper, if that's what loaded this in an
+    // iframe) that this page is genuinely serving from a real backend — not
+    // a connection-refused/TLS-interstitial page, which never runs this
+    // script at all. Fired immediately, not after the WS connects: the
+    // wrapper only needs to know "a real backend is here," and its own
+    // timeout is the fallback if this never arrives. Harmless if there's no
+    // parent listening (e.g. terminal.html opened directly).
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'miro-terminal:ready' }, '*');
+    }
+
     // Parse query parameters
     const params = new URLSearchParams(window.location.search);
     const sid = params.get('sid');

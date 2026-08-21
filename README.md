@@ -1,10 +1,20 @@
 # Miro Terminal
 
 A persistent terminal, embedded on a Miro board. Extracted from `miro-ide` into
-its own repo so the frontend/backend split matches `fal-miro`: the frontend is
-hosted once (by whoever owns this repo's deployment); everyone else who wants
-to *run* a terminal deploys their own backend. See `ARCHITECTURE.md` for the
-full design and the linked Miro board for the decision history.
+its own repo so the frontend/backend split matches `fal-miro` — **with one
+deliberate difference**: unlike `fal-miro`, the app frontend here is **not**
+hosted publicly. Every panel/headless call talks to `localhost` (that's the
+whole point — it's *your* terminal), and Chrome's Private Network Access
+policy blocks a publicly-hosted page from fetching `localhost` when it's
+nested inside Miro's iframe (confirmed live, not hypothetical — see
+`ARCHITECTURE.md`). So: **the app (`index.html`/`app.html`) runs from your own
+machine** alongside the backend, same as local dev always has. The **only**
+thing hosted publicly (GitHub Pages) is `terminal-wrapper/` — the State A/B
+fallback page every *other* viewer's browser loads for the embed, regardless
+of whose machine is actually running it.
+
+See `ARCHITECTURE.md` for the full design and the linked Miro board for the
+decision history.
 
 ## Layout
 
@@ -16,7 +26,7 @@ miro-terminal/
       panel.ts         panel UI — session name/cwd, "Create terminal"
       terminalEmbed.ts  embed creation + connected-doc/viewport context relay
       backendConfig.ts  per-person backend URL, stored in this browser's localStorage
-    terminal-wrapper/  static health-probe + fallback page (deploy separately, see below)
+    terminal-wrapper/  the only publicly-hosted piece — State A/B fallback page (see below)
   backend/             PTY server — YOU deploy this, on a machine YOU control
     server.js          Express + node-pty + ws
     public/
@@ -65,12 +75,10 @@ npm install
 npm run dev
 ```
 
-Point the app's `sdkUri` (see `app-manifest.yaml`) at your dev server, or build
-and host it:
-
-```bash
-npm run build
-```
+`app-manifest.yaml`'s `sdkUri`/`redirectUris` already point at
+`http://localhost:5173/` — Vite's default. This has to stay a `localhost`
+URL, not a hosted one; see the note at the top of this file and
+`ARCHITECTURE.md` for why.
 
 ## Deploy your own backend, permanently
 
@@ -83,28 +91,40 @@ transfer here.)
 
 ## The shared wrapper (State A/B) — deployed
 
-`frontend/terminal-wrapper/` is a static page: it health-checks
-`localhost`/`127.0.0.1`/`[::1]` from the *viewer's own browser*, and either
-iframes their local terminal (if they're the host) or shows "a collaborator
-started this session on their computer" (if they're not).
+`frontend/terminal-wrapper/` is the **only** publicly-hosted piece of this
+app — a static page that decides, per-viewer, what to show for the embed
+widget every board visitor loads the same URL for:
 
-It's live at **https://charliewinters.github.io/miro-terminal/terminal-wrapper/**,
-and the full app frontend (`index.html`/`app.html`) is deployed alongside it
-at **https://charliewinters.github.io/miro-terminal/**. `WRAPPER_URL` in
-`frontend/src/backendConfig.ts` and `sdkUri`/`redirectUris` in
-`app-manifest.yaml` already point at these.
+- **You're the host**: it navigates a nested iframe to your real
+  `terminal.html` and shows it once that page confirms it actually loaded
+  (a `postMessage` ping — see below).
+- **You're not**: nothing confirms within a few seconds, so it shows "a
+  collaborator started this session on their computer" instead of a broken
+  iframe.
 
-To redeploy after any frontend change:
+It's live at **https://charliewinters.github.io/miro-terminal/terminal-wrapper/**.
+`WRAPPER_URL` in `frontend/src/backendConfig.ts` already points at it.
+
+**Why it navigates instead of fetching a health-check endpoint** (which is
+what it used to do): a `fetch()` from this public page straight to your
+`localhost` backend is exactly the pattern Chrome's Private Network Access
+policy blocks — and did, live, when this app was briefly hosted publicly too
+(see `ARCHITECTURE.md`). Navigating a nested `<iframe>` isn't gated the same
+way, so detection instead relies on `terminal.html` itself `postMessage`-ing
+`{ type: 'miro-terminal:ready' }` to its parent as soon as it loads (before
+the PTY/WS connection even completes — this only needs to prove "a real
+backend served this page," not that everything downstream works). No message
+within `READY_TIMEOUT_MS` (4s) and the wrapper falls back to the "someone
+else's machine" message — which also naturally covers connection-refused,
+untrusted-cert interstitials, and anything else that isn't our own page,
+since none of those run this script at all.
+
+To redeploy after any change to `terminal-wrapper/index.html`:
 
 ```bash
 cd frontend
 npm run pages:publish
 ```
-
-This runs `vite build`, copies `terminal-wrapper/` into `dist/`, and pushes
-the whole `dist/` folder to the `gh-pages` branch (via the
-[`gh-pages`](https://github.com/tschaub/gh-pages) package) — so both the app
-and the wrapper are redeployed together from one command.
 
 ## Troubleshooting
 
@@ -139,7 +159,9 @@ itself will still need `https://` once it's actually sitting inside the
 ## Status
 
 See the kanban on the Miro plan board for current phase status. Short version:
-State A/B is built and **deployed** (see above); the connected-doc/variable-expansion
-context relay is built; State C (opt-in Cloudflare relay streaming, with
-optional history) is designed but not built — the Worker/Durable-Object relay
-itself is next; this deploy only covers the frontend side.
+State A/B is built and **deployed**, using navigate+`postMessage` detection
+rather than a health-check fetch (see above — the fetch version hit a real
+Chrome Private Network Access block once tested against the public
+deployment); the connected-doc/variable-expansion context relay is built;
+State C (opt-in Cloudflare relay streaming, with optional history) is
+designed but not built.

@@ -1,12 +1,14 @@
 # Architecture — Miro Terminal
 
 Extracted from `miro-ide`'s `terminal-embed` + `terminal-server` + `terminal-wrapper`
-into its own repo, following the same hosted-frontend / self-hosted-backend split
-as `fal-miro`. This file is the repo-local copy of the board's plan
+into its own repo, following `fal-miro`'s frontend/backend split — **with one
+deliberate departure**: the app frontend runs from your own machine, not a
+public host (see "Two iframes" below for why). Only `terminal-wrapper/` is
+publicly hosted. This file is the repo-local copy of the board's plan
 (https://miro.com/app/board/uXjVHw91nj0=/) — read that board for the full
 decision history; this is just the settled shape.
 
-## Two iframes
+## Two iframes — both run from YOUR machine, not hosted
 
 | Iframe   | Entry HTML     | Entry script       | Job |
 | -------- | -------------- | ------------------- | --- |
@@ -17,13 +19,49 @@ There's no modal and no `RUN_AGENT`-style cross-frame message bus — unlike
 fal-miro this app has exactly one job, so the panel calls `createTerminalEmbed`
 (`src/terminalEmbed.ts`) directly.
 
-### The embed — a third, Miro-SDK-free surface
+**Unlike fal-miro, this frontend is not hosted publicly** — `sdkUri` in
+`app-manifest.yaml` points at `http://localhost:5173/`, wherever you run
+`npm run dev`. This was tried and reverted: every call these two iframes make
+(`/api/pty/start`, `/api/browse`, the context push) targets `localhost`, and
+briefly hosting them on GitHub Pages made every one of those calls a
+public-page-fetching-a-loopback-address request — which Chrome's **Private
+Network Access** policy blocks outright when the page is nested inside
+Miro's iframe (confirmed live: `Permission was denied for this request to
+access the 'loopback' address space`, even after correctly setting
+`Access-Control-Allow-Private-Network` server-side — PNA is a browser
+*permission* gate above CORS, not just a header check, and nested
+non-top-level iframes generally can't be granted permissions unless the
+top-level page — Miro's, here, not ours — explicitly delegates it via
+`Permissions-Policy`, which it doesn't). Confirmed the granted-permission
+doesn't carry over from a top-level tab into the nested iframe either.
+Keeping the app on `localhost` sidesteps the whole problem: `localhost`
+talking to `localhost` is loopback-to-loopback, never public-to-private, so
+PNA never enters into it — exactly how local dev worked throughout this
+project before any of this came up.
 
-The widget created by `board.createEmbed` points at either the terminal server
-directly, or (once the shared wrapper is turned on) at `terminal-wrapper/index.html`
-— a static page with **no Miro SDK and no backend of its own**. Same principle as
-fal-miro's `embed-*.html` pages: every board viewer's browser loads it straight
-from wherever it's hosted (GitHub Pages), and it decides for itself what to show.
+### The embed — a third, Miro-SDK-free surface, and the one thing that IS public
+
+The widget created by `board.createEmbed` points at `terminal-wrapper/index.html`
+— a static page with **no Miro SDK and no backend of its own**, hosted on GitHub
+Pages. This is the **only** publicly-hosted piece of the whole app, and it has
+to be: every board viewer's browser loads the *same* embed URL regardless of
+whose machine is actually running the session, so it can't be a `localhost`
+address for anyone except the host. Same principle as fal-miro's `embed-*.html`
+pages otherwise — loads straight from wherever it's hosted, decides for itself
+what to show, no backend call of its own baked into the embed's identity.
+
+**The wrapper hits the exact same PNA wall for its own detection step** — it
+used to `fetch()` a `/health` endpoint, which is exactly the blocked pattern.
+The fix: it doesn't `fetch()` anything anymore. It unconditionally navigates a
+nested `<iframe>` to your real `terminal.html`, and detects success via a
+`postMessage` that page sends immediately on load (see `terminal.html`'s
+`miro-terminal:ready` ping) — navigation isn't gated by PNA the way
+`fetch`/`XHR`/`WebSocket` are, since it's not a script-initiated subresource
+request. A `setTimeout` (`READY_TIMEOUT_MS`, 4s) is the fallback: if the real
+page never confirms — because nothing's listening, because a self-signed cert
+shows a warning interstitial instead, whatever — none of those alternate
+outcomes ever run our script to send the ready ping, so the timeout alone
+correctly catches all of them without needing to know which one occurred.
 
 ## Why this backend can't be Hono/Workers like fal-miro's
 
@@ -40,14 +78,18 @@ a Workers V8 isolate, full stop. So:
 
 ## Three states for a viewer opening the terminal embed
 
-**State A — nobody's terminal is reachable from your browser.** The wrapper's
-health probe against `terminalBase` (restricted to `localhost`/`127.0.0.1`/`[::1]`)
-fails, so it shows: *"A collaborator started this session on their computer."*
-No connection attempt, no broken iframe.
+**State A — nobody's terminal is reachable from your browser.** The wrapper
+navigates its nested iframe to `terminalBase` (restricted to
+`localhost`/`127.0.0.1`/`[::1]`) regardless, but no `miro-terminal:ready`
+`postMessage` ever arrives — nothing's listening, or a cert warning
+interstitial loads instead, or any number of other non-outcomes — so after
+`READY_TIMEOUT_MS` it shows: *"A collaborator started this session on their
+computer."* No fetch ever attempted, no broken iframe left visible.
 
-**State B — you are the host.** The health probe succeeds (you're on the same
-machine as the PTY server), so the wrapper iframes `terminal.html` directly —
-you get your own live terminal.
+**State B — you are the host.** The navigated iframe really does load your
+`terminal.html` (you're on the same machine as the PTY server), which
+`postMessage`s `miro-terminal:ready` back immediately — the wrapper reveals
+the iframe and you get your own live terminal.
 
 **State C — opt-in streaming to everyone else (not built yet).** The host's
 local `backend/server.js` opens an outbound WebSocket to a small Cloudflare
@@ -65,7 +107,7 @@ Express + `node-pty` + `ws`, unchanged from `miro-ide`'s `terminal-server`:
 | ------ | ----------------------------- | --- |
 | POST   | `/api/pty/start`              | `{ sid?, cwd?, name? }` → creates/reuses a PTY session, returns `{ sid, url, wsUrl }` with a short-lived HMAC token. |
 | DELETE | `/api/pty/close`              | `?sid=…` — kills the session. |
-| GET    | `/health`                     | Liveness + session count. Unauthenticated — this is what the wrapper probes. |
+| GET    | `/health`                     | Liveness + session count. Unauthenticated. No longer what the wrapper uses for detection (see "Two iframes" above) — still useful for manual debugging/curl. |
 | GET    | `/api/browse`                 | `?path=…` (optional, defaults to `ALLOWED_ROOT`) — lists subdirectories for the panel's working-directory picker. Same `safeJoin`/`ALLOWED_ROOT` scoping as `cwd`. Unauthenticated, like `/health`. |
 | POST   | `/api/pty/:sid/input`         | `{ token, data, pressEnter? }` — writes `data` straight into the session's PTY, as if typed. Always human-triggered from the panel's "Send to terminal"; nothing calls this automatically. |
 | POST   | `/api/context/:embedId`       | Pushes `{ input, named, viewport }` for an embed (see below). |

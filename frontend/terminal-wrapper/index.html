@@ -135,32 +135,59 @@
     return;
   }
 
-  var healthUrl = terminalBase + '/health';
+  // Deliberately NOT a fetch() health check anymore: this page is public
+  // (github.io) and terminalBase is a loopback address, so Chrome's Private
+  // Network Access permission gate blocks that fetch outright when this
+  // page is nested inside Miro's iframe (no top-level context to show the
+  // permission prompt in, and Miro doesn't delegate it to app iframes) —
+  // confirmed live, not hypothetical. Navigating an iframe's src isn't
+  // subject to that same gate, so instead: always navigate, and detect
+  // success via a postMessage the real terminal.html sends once it actually
+  // loads (see backend/public/terminal.html's early "ready" ping). A
+  // connection-refused/TLS-interstitial/anything-else-that-isn't-our-page
+  // never sends that message, so the timeout below is what catches those.
+  var READY_TIMEOUT_MS = 4000;
+  var settled = false;
 
-  fetch(healthUrl, { method: 'GET', mode: 'cors', cache: 'no-store' })
-    .then(function (res) {
-      if (!res.ok) throw new Error('Health returned ' + res.status);
-      return res.json();
-    })
-    .then(function () {
-      spinner.hidden = true;
-      splash.classList.add('hidden');
-      frameWrap.classList.add('visible');
-      term.src = buildTerminalSrc(terminalBase, forward);
-    })
-    .catch(function (e) {
-      spinner.hidden = true;
-      title.textContent = 'Terminal runs on another machine';
-      body.innerHTML =
-        'No PTY server responded at <strong>' +
-        terminalBase +
-        '</strong> from your browser. ' +
-        'A collaborator started this session on <em>their</em> computer—you can see the board, ' +
-        'but only they (or someone with the same server and session) can use this terminal. ' +
-        'If you are the host, start the terminal server locally (see project README), use HTTPS if the app requires it, then refresh the board.';
-      err.hidden = false;
-      err.textContent = e && e.message ? String(e.message) : 'Connection failed';
-    });
+  function showFallback(reason) {
+    if (settled) return;
+    settled = true;
+    spinner.hidden = true;
+    title.textContent = 'Terminal runs on another machine';
+    body.innerHTML =
+      'No PTY server responded at <strong>' +
+      terminalBase +
+      '</strong> from your browser. ' +
+      'A collaborator started this session on <em>their</em> computer—you can see the board, ' +
+      'but only they (or someone with the same server and session) can use this terminal. ' +
+      'If you are the host, start the terminal server locally (see project README), use HTTPS if the app requires it, then refresh the board.';
+    err.hidden = false;
+    err.textContent = reason || 'No response from the local terminal server';
+  }
+
+  function showTerminal() {
+    if (settled) return;
+    settled = true;
+    spinner.hidden = true;
+    splash.classList.add('hidden');
+    frameWrap.classList.add('visible');
+  }
+
+  var terminalOrigin = new URL(terminalBase).origin;
+  window.addEventListener('message', function (event) {
+    if (settled) return;
+    if (event.source !== term.contentWindow) return;
+    if (event.origin !== terminalOrigin) return;
+    if (event.data && event.data.type === 'miro-terminal:ready') {
+      showTerminal();
+    }
+  });
+
+  setTimeout(function () {
+    showFallback();
+  }, READY_TIMEOUT_MS);
+
+  term.src = buildTerminalSrc(terminalBase, forward);
 })();
   </script>
 </body>
