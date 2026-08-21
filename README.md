@@ -81,25 +81,30 @@ which Workers' V8 isolates can't do. (Contrast with `fal-miro`, whose Hono
 backend deploys to either Node or Workers unchanged — that trick doesn't
 transfer here.)
 
-## Turn on the shared wrapper (State A/B)
+## The shared wrapper (State A/B) — deployed
 
 `frontend/terminal-wrapper/` is a static page: it health-checks
 `localhost`/`127.0.0.1`/`[::1]` from the *viewer's own browser*, and either
 iframes their local terminal (if they're the host) or shows "a collaborator
-started this session on their computer" (if they're not). Deploy it once,
-publicly, and every board gets the same experience:
+started this session on their computer" (if they're not).
+
+It's live at **https://charliewinters.github.io/miro-terminal/terminal-wrapper/**,
+and the full app frontend (`index.html`/`app.html`) is deployed alongside it
+at **https://charliewinters.github.io/miro-terminal/**. `WRAPPER_URL` in
+`frontend/src/backendConfig.ts` and `sdkUri`/`redirectUris` in
+`app-manifest.yaml` already point at these.
+
+To redeploy after any frontend change:
 
 ```bash
 cd frontend
 npm run pages:publish
 ```
 
-This pushes `frontend/terminal-wrapper/` to the `gh-pages` branch (via the
-[`gh-pages`](https://github.com/tschaub/gh-pages) package) at path
-`terminal-wrapper/`. Enable it under the repo's **Settings → Pages** (deploy
-from the `gh-pages` branch), then set `WRAPPER_URL` in
-`frontend/src/backendConfig.ts` to the resulting
-`https://YOUR_USER.github.io/YOUR_REPO/terminal-wrapper/` URL and rebuild.
+This runs `vite build`, copies `terminal-wrapper/` into `dist/`, and pushes
+the whole `dist/` folder to the `gh-pages` branch (via the
+[`gh-pages`](https://github.com/tschaub/gh-pages) package) — so both the app
+and the wrapper are redeployed together from one command.
 
 ## Troubleshooting
 
@@ -134,6 +139,7 @@ itself will still need `https://` once it's actually sitting inside the
 ## Status
 
 See the kanban on the Miro plan board for current phase status. Short version:
-State A/B is built and ready to turn on; the connected-doc/variable-expansion
+State A/B is built and **deployed** (see above); the connected-doc/variable-expansion
 context relay is built; State C (opt-in Cloudflare relay streaming, with
-optional history) is designed but not built.
+optional history) is designed but not built — the Worker/Durable-Object relay
+itself is next; this deploy only covers the frontend side.

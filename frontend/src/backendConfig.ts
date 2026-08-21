@@ -37,7 +37,7 @@ export function clearBackendConfig(): void {
 /**
  * Hosted wrapper page (see ../terminal-wrapper/) that health-checks this
  * person's terminalBase and either iframes the live terminal or shows an
- * informational fallback to everyone else on the board. Empty until deployed
- * (see README "Deploy your own backend" / "Turn on the shared wrapper").
+ * informational fallback to everyone else on the board. Deployed via
+ * `npm run pages:publish` — see README "Turn on the shared wrapper".
  */
-export const WRAPPER_URL = '';
+export const WRAPPER_URL = 'https://charliewinters.github.io/miro-terminal/terminal-wrapper/';

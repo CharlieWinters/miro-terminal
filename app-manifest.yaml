@@ -1,12 +1,13 @@
 # Paste into the "App Manifest" section of your Miro app at
 # https://miro.com/app/settings/user-profile/apps/  (after creating an app).
-# Replace `https://your-frontend.example.com` with wherever you host the
-# static frontend build (GitHub Pages, Netlify, Vercel, etc).
+# Frontend is deployed via `npm run pages:publish` (frontend/package.json) to
+# https://charliewinters.github.io/miro-terminal/ — rebuild+republish after
+# any change to frontend/src or app.html/index.html.
 
 appName: Miro Terminal
 sdkVersion: SDK_V2
 
-sdkUri: https://your-frontend.example.com/index.html
+sdkUri: https://charliewinters.github.io/miro-terminal/index.html
 
 scopes:
   - boards:read
@@ -14,10 +15,12 @@ scopes:
   - identity:read
 
 redirectUris:
-  - https://your-frontend.example.com/
+  - https://charliewinters.github.io/miro-terminal/
 
+# TODO: no icon has been designed/deployed yet — Miro's app settings form may
+# require one to save the manifest; a placeholder icon URL will just 404.
 icons:
-  - src: https://your-frontend.example.com/icon.svg
+  - src: https://charliewinters.github.io/miro-terminal/icon.svg
     size: 24
 
 # When the user clicks the app icon, the headless (sdkUri) iframe loads and
