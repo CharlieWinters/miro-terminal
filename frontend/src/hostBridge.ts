@@ -187,8 +187,17 @@ async function openDeveloperModal(embedId: string): Promise<void> {
   }
   const { url } = (await res.json()) as { url: string };
 
+  // /api/pty/start returns only sid and token, but terminal.html needs the
+  // embedId too: that is the key it looks board context up under, so without it
+  // the [INPUT] / [LABEL] / [LINK_x] tokens silently stop expanding (it logs
+  // "No embedId - cannot fetch context" and carries on). It also keys its local
+  // per-terminal state off embedId, so passing it keeps the modal continuous
+  // with the same terminal opened any other way.
+  const modalUrl = new URL(`${backend.terminalBase}${url}`);
+  modalUrl.searchParams.set('embedId', embedId);
+
   await miro.board.ui.openModal({
-    url: `${backend.terminalBase}${url}`,
+    url: modalUrl.toString(),
     fullscreen: true,
   });
 }
