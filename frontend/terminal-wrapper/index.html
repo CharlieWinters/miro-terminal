@@ -188,7 +188,19 @@
     try { window.top.length; return window.top; } catch (e) { return window.parent; }
   }(), 0);
 
+  // Once a frame has answered, talk only to that one. Posting to every frame
+  // with an exact targetOrigin makes the browser log a console error for each
+  // frame whose origin does not match — harmless, but enough of it to bury a
+  // real error. The wildcard alternative is worse: it would hand the message to
+  // every other frame on the board, including other apps' iframes.
+  var appWindow = null;
+  var appOrigin = null;
+
   function post(message) {
+    if (appWindow && appOrigin) {
+      try { appWindow.postMessage(message, appOrigin); } catch (e) {}
+      return;
+    }
     frames.forEach(function (win) {
       appOrigins.forEach(function (origin) {
         try { win.postMessage(message, origin); } catch (e) {}
@@ -271,6 +283,9 @@
     var d = event.data;
     if (!d || typeof d !== 'object') return;
     if (appOrigins.indexOf(event.origin) === -1) return;
+
+    // Latch on: this frame is the app, so stop broadcasting at the others.
+    if (!appWindow && event.source) { appWindow = event.source; appOrigin = event.origin; }
 
     if (d.type === MSG.appReady && !settled) { post({ type: MSG.hello, v: 1, embedId: embedId }); return; }
     if (d.embedId && d.embedId !== embedId) return;

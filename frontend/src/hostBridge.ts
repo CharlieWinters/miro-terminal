@@ -36,6 +36,19 @@ const ALLOWED_EMBED_ORIGINS = [
   'http://localhost:4173',
 ];
 
+/** The modal is served BY the terminal server, so its origin is whatever the
+ * user configured as the backend. Added dynamically rather than hardcoded,
+ * because the port is theirs to choose. */
+function allowedOrigins(): string[] {
+  const backend = getBackendConfig();
+  if (!backend?.terminalBase) return ALLOWED_EMBED_ORIGINS;
+  try {
+    return ALLOWED_EMBED_ORIGINS.concat(new URL(backend.terminalBase).origin);
+  } catch {
+    return ALLOWED_EMBED_ORIGINS;
+  }
+}
+
 /** A sandboxed iframe has an opaque origin and arrives as the literal "null".
  * Allowed through, because the embedId check below is what actually
  * authorises — origin is unusable as a check in that case. */
@@ -50,6 +63,10 @@ const MSG = {
   state: 'mt:state',
   openDev: 'mt:open-dev',
   opened: 'mt:opened',
+  ctxRequest: 'mt:ctx-request',
+  ctx: 'mt:ctx',
+  historyWrite: 'mt:history-write',
+  historyOk: 'mt:history-ok',
   error: 'mt:error',
   appReady: 'mt:app-ready',
 } as const;
@@ -58,6 +75,13 @@ interface BridgeRequest {
   type?: string;
   v?: number;
   embedId?: string;
+  history?: TerminalHistory;
+}
+
+interface ConnectedContext {
+  input: string;
+  named: Record<string, string>;
+  viewport: unknown;
 }
 
 interface EmbedWidget {
@@ -117,6 +141,85 @@ export interface TerminalHistory {
   sessionName: string | null;
   updatedAt: string | null;
   by: string | null;
+}
+
+function stripHtml(html: unknown): string {
+  return String(html ?? '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
+}
+
+/** Cards keep their text in title/description, not content. Anything
+ * unreadable falls back to a board link, the only useful thing left to give. */
+function readItemText(item: Record<string, string | undefined> & { type: string }): string | null {
+  if (item.type === 'sticky_note' || item.type === 'text' || item.type === 'shape') {
+    return stripHtml(item.content) || null;
+  }
+  if (item.type === 'card' || item.type === 'app_card') {
+    const parts = [stripHtml(item.title), stripHtml(item.description)].filter(Boolean);
+    return parts.length ? parts.join('\n') : null;
+  }
+  if (item.type === 'frame') return stripHtml(item.title) || null;
+  return null;
+}
+
+/**
+ * Reads the items connected to a terminal embed, for the modal.
+ *
+ * This lives here rather than in terminal.html because the modal is served by
+ * the terminal server, on a different origin from the app — and a Miro app
+ * surface on a foreign origin loads the SDK but never completes its connection
+ * handshake ("SDK is not connected / version fetching timeout"), so board calls
+ * from there throw. This iframe is the app's own origin, so its SDK works.
+ *
+ * That split is permanent, not a workaround: once sdkUri is publicly hosted, no
+ * single surface can hold both a working SDK and access to localhost. Board
+ * work belongs on the app origin; PTY work belongs on the machine.
+ *
+ * Labelling rule unchanged: the label is the CONNECTOR's caption, never the
+ * item's content, and a caption starting with "link" resolves to a board link.
+ */
+async function readConnectedContext(embed: EmbedWidget): Promise<ConnectedContext> {
+  const [boardInfo, viewport] = await Promise.all([
+    miro.board.getInfo(),
+    miro.board.viewport.get(),
+  ]);
+  const boardId = (boardInfo as unknown as { id: string }).id;
+
+  const connectorIds = embed.connectorIds ?? [];
+  const connectors = connectorIds.length
+    ? ((await miro.board.get({ id: connectorIds })) as unknown as Array<{
+        start?: { item?: string };
+        end?: { item?: string };
+        captions?: Array<{ content?: string }>;
+      }>)
+    : [];
+
+  const pairs: Array<{ itemId: string; label: string | null }> = [];
+  for (const c of connectors) {
+    const startItem = c.start?.item;
+    const endItem = c.end?.item;
+    const other = startItem === embed.id ? endItem : endItem === embed.id ? startItem : undefined;
+    if (!other) continue;
+    pairs.push({ itemId: other, label: stripHtml(c.captions?.[0]?.content) || null });
+  }
+
+  const items = pairs.length
+    ? ((await miro.board.get({ id: pairs.map((p) => p.itemId) })) as unknown as Array<
+        Record<string, string | undefined> & { id: string; type: string }
+      >)
+    : [];
+  const byId = new Map(items.map((i) => [i.id, i]));
+
+  const inputParts: string[] = [];
+  const named: Record<string, string> = {};
+  for (const { itemId, label } of pairs) {
+    const item = byId.get(itemId);
+    if (!item) continue;
+    const link = `https://miro.com/app/board/${boardId}/?moveToWidget=${itemId}&cot=14`;
+    const text = readItemText(item);
+    if (label) named[label] = /^link/i.test(label) ? link : text ?? link;
+    else inputParts.push(text ?? link);
+  }
+  return { input: inputParts.join('\n'), named, viewport };
 }
 
 export interface BridgeState {
@@ -225,6 +328,9 @@ async function openDeveloperModal(embedId: string): Promise<void> {
   // with the same terminal opened any other way.
   const modalUrl = new URL(`${backend.terminalBase}${url}`);
   modalUrl.searchParams.set('embedId', embedId);
+  // Where to send board work. The modal cannot use the SDK from its own
+  // origin, so it posts here instead; exact origin, never '*'.
+  modalUrl.searchParams.set('appOrigins', window.location.origin);
 
   await miro.board.ui.openModal({
     url: modalUrl.toString(),
@@ -237,11 +343,13 @@ function reply(event: MessageEvent, payload: Record<string, unknown>): void {
   (event.source as Window | null)?.postMessage(payload, { targetOrigin: target });
 }
 
+const HANDLED = [MSG.hello, MSG.openDev, MSG.ctxRequest, MSG.historyWrite] as string[];
+
 async function handle(event: MessageEvent): Promise<void> {
   const data = event.data as BridgeRequest | null;
   if (!data || typeof data !== 'object') return;
-  if (data.type !== MSG.hello && data.type !== MSG.openDev) return;
-  if (event.origin !== OPAQUE_ORIGIN && !ALLOWED_EMBED_ORIGINS.includes(event.origin)) {
+  if (!data.type || !HANDLED.includes(data.type)) return;
+  if (event.origin !== OPAQUE_ORIGIN && !allowedOrigins().includes(event.origin)) {
     console.warn('[bridge] ignoring message from unexpected origin', event.origin);
     return;
   }
@@ -251,6 +359,42 @@ async function handle(event: MessageEvent): Promise<void> {
   if (data.type === MSG.hello) {
     const state = await collectState(embedId);
     reply(event, { type: MSG.state, v: 1, embedId, ...state });
+    return;
+  }
+
+  // The modal asking for board context, because it cannot read the board
+  // itself (foreign origin, SDK never connects).
+  if (data.type === MSG.ctxRequest) {
+    const embed = await findEmbedByEmbedId(embedId);
+    if (!embed) {
+      reply(event, { type: MSG.ctx, v: 1, embedId, input: '', named: {}, viewport: null });
+      return;
+    }
+    const ctx = await readConnectedContext(embed);
+    reply(event, { type: MSG.ctx, v: 1, embedId, ...ctx });
+    return;
+  }
+
+  // The modal handing over a history snapshot to be written to board metadata.
+  if (data.type === MSG.historyWrite) {
+    const embed = await findEmbedByEmbedId(embedId);
+    if (!embed || !data.history) {
+      reply(event, { type: MSG.historyOk, v: 1, embedId, ok: false });
+      return;
+    }
+    let by = data.history.by ?? null;
+    if (!by) {
+      try {
+        const user = (await miro.board.getUserInfo()) as unknown as { name?: string; id?: string };
+        by = user?.name ?? user?.id ?? null;
+      } catch {
+        /* identity scope may not be granted */
+      }
+    }
+    await (embed as unknown as {
+      setMetadata: (k: string, v: unknown) => Promise<void>;
+    }).setMetadata(HISTORY_METADATA_KEY, { ...data.history, by });
+    reply(event, { type: MSG.historyOk, v: 1, embedId, ok: true });
     return;
   }
 
