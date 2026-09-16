@@ -110,8 +110,23 @@
   var sessionName = params.get('name') || '';
   // Exact origins only, never '*' — a wildcard would hand this message to every
   // other frame on the board, including other apps' iframes.
-  var appOrigins = (params.get('appOrigins') || 'http://localhost:5173,https://localhost:5173')
+  //
+  // The URL's appOrigins is stamped into each embed AT CREATION TIME and then
+  // frozen in board content, so an embed made before the app moved origin still
+  // names the old one. Rather than have every existing terminal go dark on the
+  // day the app is published, the known origins are always tried as well. The
+  // cost of an extra candidate is one ignored postMessage.
+  var KNOWN_APP_ORIGINS = [
+    'https://charliewinters.github.io',
+    'http://localhost:5173',
+    'https://localhost:5173',
+    'http://localhost:4173'
+  ];
+  var appOrigins = (params.get('appOrigins') || '')
     .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  KNOWN_APP_ORIGINS.forEach(function (o) {
+    if (appOrigins.indexOf(o) === -1) appOrigins.push(o);
+  });
 
   var MSG = {
     hello: 'mt:hello', state: 'mt:state', openDev: 'mt:open-dev',

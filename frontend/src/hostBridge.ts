@@ -25,7 +25,8 @@
  */
 
 import { getBackendConfig } from './backendConfig';
-import { METADATA_KEY } from './terminalEmbed';
+import { METADATA_KEY, placeTerminalEmbed } from './terminalEmbed';
+import { WRAPPER_URL } from './backendConfig';
 
 /** Origins allowed to talk to this bridge. The embed is the Pages one; the
  * localhost entries are for running the wrapper from a dev server. */
@@ -68,6 +69,10 @@ const MSG = {
   historyWrite: 'mt:history-write',
   historyOk: 'mt:history-ok',
   historyChanged: 'mt:history-changed',
+  spawn: 'mt:spawn',
+  spawned: 'mt:spawned',
+  openSpawner: 'mt:open-spawner',
+  openSettings: 'mt:open-settings',
   error: 'mt:error',
   appReady: 'mt:app-ready',
 } as const;
@@ -77,6 +82,10 @@ interface BridgeRequest {
   v?: number;
   embedId?: string;
   history?: TerminalHistory;
+  /** Spawn payload: the session the spawner already started on its own origin. */
+  ptyUrl?: string;
+  sessionName?: string;
+  cwd?: string;
 }
 
 interface ConnectedContext {
@@ -339,12 +348,42 @@ async function openDeveloperModal(embedId: string): Promise<void> {
   });
 }
 
+/** The spawner is served BY the terminal server, so /api/browse and
+ * /api/pty/start are same-origin calls from there — which is the whole point,
+ * since nothing on the app's own origin can reach localhost. */
+export async function openSpawnerPanel(): Promise<void> {
+  const backend = getBackendConfig();
+  if (!backend?.terminalBase) throw new Error('No backend configured in this browser.');
+  const url = new URL(`${backend.terminalBase}/spawner.html`);
+  url.searchParams.set('appOrigins', window.location.origin);
+  await miro.board.ui.openPanel({ url: url.toString() });
+}
+
+/** Back to the app's own panel, which owns the backend URL — it has to live on
+ * the app origin, because that is the origin whose localStorage is read when
+ * building spawner and modal URLs. */
+async function openSettingsPanel(): Promise<void> {
+  await miro.board.ui.openPanel({ url: 'app.html' });
+}
+
 function reply(event: MessageEvent, payload: Record<string, unknown>): void {
   const target = event.origin === OPAQUE_ORIGIN ? '*' : event.origin;
   (event.source as Window | null)?.postMessage(payload, { targetOrigin: target });
 }
 
-const HANDLED = [MSG.hello, MSG.openDev, MSG.ctxRequest, MSG.historyWrite] as string[];
+const HANDLED = [
+  MSG.hello,
+  MSG.openDev,
+  MSG.ctxRequest,
+  MSG.historyWrite,
+  MSG.spawn,
+  MSG.openSpawner,
+  MSG.openSettings,
+] as string[];
+
+/** Requests that are about a surface rather than a specific embed, so they
+ * carry no embedId. */
+const EMBEDLESS = [MSG.spawn, MSG.openSpawner, MSG.openSettings] as string[];
 
 async function handle(event: MessageEvent): Promise<void> {
   const data = event.data as BridgeRequest | null;
@@ -354,6 +393,38 @@ async function handle(event: MessageEvent): Promise<void> {
     console.warn('[bridge] ignoring message from unexpected origin', event.origin);
     return;
   }
+  // Panel plumbing and spawning are not about an existing embed.
+  if (EMBEDLESS.includes(data.type)) {
+    try {
+      if (data.type === MSG.openSpawner) {
+        await openSpawnerPanel();
+      } else if (data.type === MSG.openSettings) {
+        await openSettingsPanel();
+      } else {
+        const backend = getBackendConfig();
+        if (!backend?.terminalBase) throw new Error('No backend configured in this browser.');
+        if (!data.ptyUrl) throw new Error('Spawn request carried no session URL.');
+        // The spawner already started the session on its own origin; this side
+        // only does the board half, which is the half it cannot do.
+        const placed = await placeTerminalEmbed(backend.terminalBase, WRAPPER_URL, data.ptyUrl, {
+          sessionName: data.sessionName,
+          cwd: data.cwd,
+        });
+        reply(event, { type: MSG.spawned, v: 1, ok: true, ...placed });
+        return;
+      }
+      reply(event, { type: MSG.spawned, v: 1, ok: true });
+    } catch (error) {
+      reply(event, {
+        type: MSG.spawned,
+        v: 1,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
+
   const embedId = data.embedId;
   if (!embedId) return;
 

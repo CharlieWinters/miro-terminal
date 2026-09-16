@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>New terminal</title>
+<style>
+  :root { color-scheme: light dark; --line:#e0e0e0; --muted:#666; --accent:#4262ff; --bad:#c0392b; --ok:#0a7d3d; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         margin: 0; padding: 16px; font-size: 14px; }
+  h3 { margin: 0 0 4px; font-size: 14px; }
+  p { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+  label { display: block; font-size: 12px; margin-bottom: 4px; }
+  input { width: 100%; margin-bottom: 12px; padding: 6px 8px; font: inherit;
+          border: 1px solid var(--line); border-radius: 6px; }
+  button { width: 100%; padding: 8px; cursor: pointer; font: inherit;
+           border-radius: 6px; border: 1px solid var(--line); background: #f6f7f8; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .55; cursor: default; }
+  hr { margin: 16px 0; border: none; border-top: 1px solid var(--line); }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; margin-bottom: 0; }
+  .row button { width: auto; white-space: nowrap; }
+  .browser { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 8px 0 12px; }
+  .crumb { font-size: 11px; color: var(--muted); margin-bottom: 6px; word-break: break-all;
+           font-family: ui-monospace, Menlo, monospace; }
+  .entries { display: flex; flex-direction: column; gap: 1px; max-height: 180px; overflow-y: auto; margin-bottom: 8px; }
+  .entry { padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+  .entry:hover { background: rgba(127,127,127,.15); }
+  .entry.empty { color: var(--muted); cursor: default; }
+  .actions { display: flex; gap: 8px; }
+  #status { font-size: 12px; margin: 8px 0 0; color: var(--muted); }
+  #status.ok { color: var(--ok); } #status.error { color: var(--bad); }
+  .foot { margin-top: 16px; font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <h3>New terminal</h3>
+  <p>
+    This panel is served by the terminal server on your machine, so it can start sessions and
+    browse your folders directly. Placing the widget on the board is done by the app.
+  </p>
+
+  <label for="opt-name">Session name</label>
+  <input type="text" id="opt-name" placeholder="e.g. frontend, backend" />
+
+  <label for="opt-cwd">Working directory</label>
+  <div class="row">
+    <input type="text" id="opt-cwd" placeholder="e.g. ~/project" />
+    <button type="button" id="browse-btn">Browse…</button>
+  </div>
+
+  <div id="browser" class="browser" hidden>
+    <div id="crumb" class="crumb"></div>
+    <div id="entries" class="entries"></div>
+    <div class="actions">
+      <button type="button" id="use-btn">Use this folder</button>
+      <button type="button" id="cancel-btn">Cancel</button>
+    </div>
+  </div>
+
+  <button type="button" id="create-btn" class="primary">Create terminal on board</button>
+  <p id="status"></p>
+
+  <hr />
+  <button type="button" id="settings-btn">Backend settings…</button>
+  <p class="foot" id="foot"></p>
+
+<script>
+(function () {
+  // ---------------------------------------------------------------------------
+  // Why this page exists at all.
+  //
+  // Creating a terminal is two jobs that can no longer happen in one place:
+  //   1. POST /api/pty/start, and GET /api/browse — calls to localhost, so they
+  //      must come from a surface served BY the terminal server. That is here.
+  //   2. board.createEmbed — needs a connected Web SDK, which a surface on a
+  //      foreign origin never gets (it loads, but the handshake never
+  //      completes). That has to happen in the app's own iframe.
+  //
+  // So this page does (1) with same-origin relative URLs — no CORS, no
+  // configuration, nothing to point at — and hands the result to the app over
+  // postMessage for (2).
+  // ---------------------------------------------------------------------------
+  var params = new URLSearchParams(location.search);
+  var APP_ORIGINS = (params.get('appOrigins') || 'http://localhost:5173')
+    .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  var TIMEOUT_MS = 6000;
+
+  var statusEl = document.getElementById('status');
+  document.getElementById('foot').textContent = 'server: ' + location.origin;
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = kind || '';
+  }
+
+  var appWindow = null, appOrigin = null;
+
+  function frames() {
+    var out = [];
+    (function collect(win, depth) {
+      if (depth > 8 || out.length > 200) return;
+      if (win !== window) out.push(win);
+      var n = 0;
+      try { n = win.length; } catch (e) { return; }
+      for (var i = 0; i < n; i++) { try { collect(win[i], depth + 1); } catch (e) {} }
+    })(function () {
+      try { window.top.length; return window.top; } catch (e) { return window.parent; }
+    }(), 0);
+    return out;
+  }
+
+  /** Sends a request to the app iframe and resolves with its reply. */
+  function askApp(request, replyType) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () {
+        window.removeEventListener('message', onMessage);
+        reject(new Error('the Miro Terminal app did not answer — is it installed on this board?'));
+      }, TIMEOUT_MS);
+
+      function onMessage(event) {
+        if (APP_ORIGINS.indexOf(event.origin) === -1) return;
+        var d = event.data;
+        if (!d || d.type !== replyType) return;
+        appWindow = event.source; appOrigin = event.origin;
+        clearTimeout(timer);
+        window.removeEventListener('message', onMessage);
+        if (d.ok === false) reject(new Error(d.error || 'the app refused the request'));
+        else resolve(d);
+      }
+      window.addEventListener('message', onMessage);
+
+      var payload = Object.assign({ v: 1 }, request);
+      if (appWindow && appOrigin) {
+        try { appWindow.postMessage(payload, appOrigin); } catch (e) {}
+      } else {
+        frames().forEach(function (win) {
+          APP_ORIGINS.forEach(function (o) { try { win.postMessage(payload, o); } catch (e) {} });
+        });
+      }
+    });
+  }
+
+  // --- folder browser (same-origin, so a bare path is enough) --------------
+  var browserEl = document.getElementById('browser');
+  var crumbEl = document.getElementById('crumb');
+  var entriesEl = document.getElementById('entries');
+  var cwdEl = document.getElementById('opt-cwd');
+  var currentPath = null;
+
+  function row(label, onClick) {
+    var d = document.createElement('div');
+    d.className = 'entry';
+    d.textContent = label;
+    d.addEventListener('click', onClick);
+    return d;
+  }
+
+  function loadPath(path) {
+    // A browser page can never learn a real filesystem path on its own, which
+    // is why this is a request to the local server rather than a file picker.
+    var url = '/api/browse' + (path ? '?path=' + encodeURIComponent(path) : '');
+    return fetch(url)
+      .then(function (res) {
+        if (!res.ok) return res.json().catch(function () { return {}; }).then(function (b) {
+          throw new Error(b.error || 'browse failed: ' + res.status);
+        });
+        return res.json();
+      })
+      .then(function (data) {
+        currentPath = data.path;
+        crumbEl.textContent = data.path;
+        entriesEl.innerHTML = '';
+        if (data.parent !== null) {
+          entriesEl.appendChild(row('.. (up)', function () { loadPath(data.parent).catch(browseErr); }));
+        }
+        (data.entries || []).forEach(function (e) {
+          entriesEl.appendChild(row(e.name, function () { loadPath(e.path).catch(browseErr); }));
+        });
+        if (!(data.entries || []).length) {
+          var empty = document.createElement('div');
+          empty.className = 'entry empty';
+          empty.textContent = '(no subfolders)';
+          entriesEl.appendChild(empty);
+        }
+      });
+  }
+
+  function browseErr(err) {
+    crumbEl.textContent = err.message || 'browse failed';
+    entriesEl.innerHTML = '';
+  }
+
+  document.getElementById('browse-btn').addEventListener('click', function () {
+    if (!browserEl.hasAttribute('hidden')) { browserEl.setAttribute('hidden', ''); return; }
+    browserEl.removeAttribute('hidden');
+    var start = cwdEl.value.trim();
+    loadPath(start || undefined).catch(function () { loadPath().catch(browseErr); });
+  });
+  document.getElementById('use-btn').addEventListener('click', function () {
+    if (currentPath) cwdEl.value = currentPath;
+    browserEl.setAttribute('hidden', '');
+  });
+  document.getElementById('cancel-btn').addEventListener('click', function () {
+    browserEl.setAttribute('hidden', '');
+  });
+
+  // --- create --------------------------------------------------------------
+  var createBtn = document.getElementById('create-btn');
+  createBtn.addEventListener('click', function () {
+    var name = document.getElementById('opt-name').value.trim();
+    var cwd = cwdEl.value.trim();
+    createBtn.disabled = true;
+    setStatus('Starting a session…');
+
+    // No sid: the backend mints a fresh one whenever one is not supplied, so
+    // every click is its own independent shell rather than a shared one.
+    fetch('/api/pty/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd: cwd || undefined, name: name || undefined }),
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error('terminal server refused: ' + res.status);
+        return res.json();
+      })
+      .then(function (session) {
+        setStatus('Placing it on the board…');
+        return askApp(
+          { type: 'mt:spawn', ptyUrl: session.url, sessionName: name || undefined, cwd: cwd || undefined },
+          'mt:spawned'
+        );
+      })
+      .then(function () {
+        setStatus('Created. Add another, or close this panel.', 'ok');
+      })
+      .catch(function (err) {
+        setStatus(err.message, 'error');
+      })
+      .then(function () {
+        createBtn.disabled = false;
+      });
+  });
+
+  document.getElementById('settings-btn').addEventListener('click', function () {
+    askApp({ type: 'mt:open-settings' }, 'mt:spawned').catch(function (err) {
+      setStatus(err.message, 'error');
+    });
+  });
+})();
+</script>
+</body>
+</html>

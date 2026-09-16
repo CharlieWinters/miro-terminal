@@ -303,6 +303,56 @@ export interface TerminalEmbedOptions {
   cwd?: string;
 }
 
+/**
+ * Places a terminal embed on the board for an ALREADY-STARTED pty session.
+ *
+ * Split out from createTerminalEmbed because the two halves of that job can no
+ * longer run in the same place. Starting a session is a call to localhost, so
+ * it has to happen on a surface served from the developer's machine; creating
+ * the widget needs a connected Web SDK, which a foreign-origin surface never
+ * gets. So the spawner (localhost) starts the session and hands the result
+ * here, to the app iframe, which puts it on the board.
+ */
+export async function placeTerminalEmbed(
+  terminalBase: string,
+  wrapperUrl: string,
+  ptyUrl: string,
+  embedOptions?: TerminalEmbedOptions
+): Promise<{ embedId: string; widgetId: string }> {
+  const boardInfo = await miro.board.getInfo();
+  const boardId = boardInfo.id;
+  const boardName = (boardInfo as { id: string; title?: string }).title || boardId;
+
+  const embedId = generateEmbedId();
+  const extraParams: Record<string, string> = {
+    embedId,
+    boardId,
+    boardName,
+    appOrigins: window.location.origin,
+  };
+  if (embedOptions?.sessionName) extraParams.name = embedOptions.sessionName;
+  if (embedOptions?.cwd) extraParams.cwd = embedOptions.cwd;
+
+  const fullUrl = buildMiroEmbedUrl(wrapperUrl, terminalBase, ptyUrl, extraParams);
+
+  const viewport = await miro.board.viewport.get();
+  const embed = await miro.board.createEmbed({
+    url: fullUrl,
+    x: viewport.x + viewport.width / 2,
+    y: viewport.y + viewport.height / 2,
+    origin: 'center',
+    width: 800,
+    height: 600,
+  });
+  embedIdToWidgetId.set(embedId, embed.id);
+  await embed.setMetadata(METADATA_KEY, { embedId });
+  await miro.board.viewport.zoomTo(embed);
+  return { embedId, widgetId: embed.id };
+}
+
+/** Starts a session AND places the embed. Only usable from a surface that can
+ * reach the terminal server — i.e. while the app itself is served from
+ * localhost. Kept for that case and for the solo local-dev flow. */
 export async function createTerminalEmbed(
   backend: BackendConfig,
   wrapperUrl: string,

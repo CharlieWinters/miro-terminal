@@ -1,8 +1,22 @@
-import { getBackendConfig, setBackendConfig, clearBackendConfig, WRAPPER_URL } from './backendConfig';
-import { createTerminalEmbed } from './terminalEmbed';
+/**
+ * Settings panel, on the app's own origin.
+ *
+ * It owns the backend URL and nothing else. Everything that needs to TALK to
+ * the terminal server — starting a session, browsing folders — lives in the
+ * spawner panel, which the server itself serves (backend/public/spawner.html),
+ * because a page on the app's origin cannot reach localhost once the app is
+ * publicly hosted.
+ *
+ * The setting has to live here rather than in the spawner: localStorage does
+ * not cross origins, and this is the origin that reads it when building spawner
+ * and modal URLs.
+ */
+
+import { getBackendConfig, setBackendConfig, clearBackendConfig } from './backendConfig';
 
 const backendUrlEl = document.getElementById('backend-url') as HTMLInputElement | null;
 const backendStatusEl = document.getElementById('backend-status') as HTMLParagraphElement | null;
+const spawnStatusEl = document.getElementById('spawn-status') as HTMLParagraphElement | null;
 
 function setBackendStatus(text: string, kind: 'ok' | 'error' | '' = ''): void {
   if (!backendStatusEl) return;
@@ -19,6 +33,12 @@ function refreshBackendStatus(): void {
     if (backendUrlEl) backendUrlEl.value = '';
     setBackendStatus('Not set yet — enter your terminal-server URL above and save.', 'error');
   }
+  const configured = Boolean(existing);
+  const btn = document.getElementById('open-spawner-btn') as HTMLButtonElement | null;
+  if (btn) btn.disabled = !configured;
+  if (spawnStatusEl && !configured) {
+    spawnStatusEl.textContent = 'Save a backend URL first.';
+  }
 }
 
 document.getElementById('save-backend-btn')?.addEventListener('click', () => {
@@ -28,6 +48,7 @@ document.getElementById('save-backend-btn')?.addEventListener('click', () => {
     return;
   }
   setBackendConfig({ terminalBase: value.replace(/\/$/, '') });
+  if (spawnStatusEl) spawnStatusEl.textContent = '';
   refreshBackendStatus();
 });
 
@@ -36,133 +57,52 @@ document.getElementById('clear-backend-btn')?.addEventListener('click', () => {
   refreshBackendStatus();
 });
 
-refreshBackendStatus();
-
-function getConfiguredBackend(): { terminalBase: string } {
-  const config = getBackendConfig();
-  if (!config) {
-    throw new Error('Set your backend URL in the Backend section above first.');
-  }
-  return config;
-}
-
-// ── Working-directory browser ──────────────────────────────────────────
-// Backed by the backend's GET /api/browse (scoped to ALLOWED_ROOT) — a
-// browser page can never learn a real filesystem path on its own, so this
-// has to be a real request to the local backend, not a native file picker.
-
-interface BrowseEntry {
-  name: string;
-  path: string;
-}
-
-interface BrowseResponse {
-  root: string;
-  path: string;
-  parent: string | null;
-  entries: BrowseEntry[];
-}
-
-const cwdInputEl = document.getElementById('terminal-opt-cwd') as HTMLInputElement | null;
-const cwdBrowserEl = document.getElementById('cwd-browser');
-const cwdBreadcrumbEl = document.getElementById('cwd-breadcrumb');
-const cwdEntriesEl = document.getElementById('cwd-entries');
-
-let currentBrowsePath: string | null = null;
-
-async function loadBrowsePath(path?: string): Promise<void> {
-  const backend = getConfiguredBackend();
-  const url = new URL(`${backend.terminalBase}/api/browse`);
-  if (path) url.searchParams.set('path', path);
-
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}) as { error?: string });
-    throw new Error(body.error || `Failed to browse: ${res.status}`);
-  }
-  renderBrowse((await res.json()) as BrowseResponse);
-}
-
-function renderBrowse(data: BrowseResponse): void {
-  currentBrowsePath = data.path;
-  if (cwdBreadcrumbEl) cwdBreadcrumbEl.textContent = data.path;
-  if (!cwdEntriesEl) return;
-
-  cwdEntriesEl.innerHTML = '';
-
-  if (data.parent !== null) {
-    cwdEntriesEl.appendChild(makeBrowseRow('.. (up)', () => loadBrowsePath(data.parent ?? undefined)));
-  }
-  for (const entry of data.entries) {
-    cwdEntriesEl.appendChild(makeBrowseRow(entry.name, () => loadBrowsePath(entry.path)));
-  }
-  if (!data.entries.length) {
-    const empty = document.createElement('div');
-    empty.className = 'cwd-entry empty';
-    empty.textContent = '(no subfolders)';
-    cwdEntriesEl.appendChild(empty);
-  }
-}
-
-function makeBrowseRow(label: string, onClick: () => Promise<void>): HTMLDivElement {
-  const row = document.createElement('div');
-  row.className = 'cwd-entry';
-  row.textContent = label;
-  row.addEventListener('click', () => {
-    onClick().catch(showBrowseError);
-  });
-  return row;
-}
-
-function showBrowseError(error: unknown): void {
-  console.error('[Terminal] Browse error:', error);
-  if (cwdBreadcrumbEl) {
-    cwdBreadcrumbEl.textContent = error instanceof Error ? error.message : 'Failed to browse';
-  }
-  if (cwdEntriesEl) cwdEntriesEl.innerHTML = '';
-}
-
-document.getElementById('browse-cwd-btn')?.addEventListener('click', () => {
-  if (!cwdBrowserEl) return;
-  const isHidden = cwdBrowserEl.hasAttribute('hidden');
-  if (!isHidden) {
-    cwdBrowserEl.setAttribute('hidden', '');
+/**
+ * Asks the headless iframe to swap this panel for the spawner.
+ *
+ * Routed rather than calling openPanel here, because the SDK documents panel
+ * opening as belonging to the headless iframe — and a panel asking for its own
+ * replacement is exactly the case where that matters. Same frame-walk as the
+ * embed uses: `length` and indexed access are on the cross-origin property
+ * allowlist, so a window reference is discoverable without one being handed
+ * over.
+ */
+function askHeadless(type: string): void {
+  const targets: Window[] = [];
+  const collect = (win: Window, depth: number): void => {
+    if (depth > 8 || targets.length > 200) return;
+    if (win !== window) targets.push(win);
+    let n = 0;
+    try {
+      n = win.length;
+    } catch {
+      return;
+    }
+    for (let i = 0; i < n; i++) {
+      try {
+        collect(win[i] as Window, depth + 1);
+      } catch {
+        /* cross-origin child */
+      }
+    }
+  };
+  try {
+    collect(window.top ?? window.parent, 0);
+  } catch {
     return;
   }
-  cwdBrowserEl.removeAttribute('hidden');
-  const startPath = cwdInputEl?.value.trim();
-  // If whatever's currently typed isn't a real browsable path, fall back to
-  // the root (ALLOWED_ROOT) instead of just showing an error immediately.
-  loadBrowsePath(startPath || undefined).catch(() => loadBrowsePath().catch(showBrowseError));
-});
-
-document.getElementById('cwd-use-btn')?.addEventListener('click', () => {
-  if (currentBrowsePath && cwdInputEl) cwdInputEl.value = currentBrowsePath;
-  cwdBrowserEl?.setAttribute('hidden', '');
-});
-
-document.getElementById('cwd-cancel-btn')?.addEventListener('click', () => {
-  cwdBrowserEl?.setAttribute('hidden', '');
-});
-
-async function handleCreateTerminal(): Promise<void> {
-  const nameEl = document.getElementById('terminal-opt-name') as HTMLInputElement | null;
-
-  try {
-    const backend = getConfiguredBackend();
-    await createTerminalEmbed(backend, WRAPPER_URL, {
-      sessionName: nameEl?.value || undefined,
-      cwd: cwdInputEl?.value || undefined,
-    });
-    await miro.board.notifications.showInfo('Terminal created on board');
-  } catch (error) {
-    console.error('[Terminal] Failed to create terminal:', error);
-    await miro.board.notifications.showError(
-      error instanceof Error ? error.message : 'Failed to create terminal'
-    );
+  for (const win of targets) {
+    try {
+      win.postMessage({ type, v: 1 }, window.location.origin);
+    } catch {
+      /* not the app's frame */
+    }
   }
 }
 
-document.getElementById('create-terminal-btn')?.addEventListener('click', () => {
-  handleCreateTerminal();
+document.getElementById('open-spawner-btn')?.addEventListener('click', () => {
+  if (spawnStatusEl) spawnStatusEl.textContent = 'Opening…';
+  askHeadless('mt:open-spawner');
 });
+
+refreshBackendStatus();

@@ -1,10 +1,23 @@
 /** Headless entry point. Runs on the board, keeps running if the panel is closed. */
 
 import { initTerminalContextSync } from './terminalEmbed';
-import { initHostBridge } from './hostBridge';
+import { initHostBridge, openSpawnerPanel } from './hostBridge';
+import { getBackendConfig } from './backendConfig';
 
 async function init(): Promise<void> {
   await miro.board.ui.on('icon:click', async () => {
+    // Straight to the spawner when this browser already knows where its
+    // terminal server is — that is the thing people click the icon to do. The
+    // settings panel is only the first-run stop, and the spawner has a way
+    // back to it.
+    if (getBackendConfig()?.terminalBase) {
+      try {
+        await openSpawnerPanel();
+        return;
+      } catch (error) {
+        console.warn('[Terminal] spawner would not open, falling back to settings:', error);
+      }
+    }
     await miro.board.ui.openPanel({ url: 'app.html' });
   });
 
