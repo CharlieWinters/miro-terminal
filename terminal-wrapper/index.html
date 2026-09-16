@@ -269,12 +269,22 @@
 
   function showNoApp() {
     settled = true;
+    // Two distinct offers, deliberately separated. Installing the app alone is
+    // enough to READ this terminal's history, because that history lives in the
+    // embed's board metadata — but metadata is scoped per item per app, so only
+    // an iframe of this app can see it, which is why nothing shows here now.
+    // Running a server is a further step, and only needed for a terminal of
+    // your own. Conflating the two is what the old copy did, and it told people
+    // to start a server to fix a problem starting a server does not fix.
     render({
       dot: 'bad',
       title: 'This terminal runs on someone else\'s computer',
-      body: 'A collaborator started this session on their own machine, so there is nothing here for ' +
-            'this browser to connect to — you can see the board, but not this terminal. ' +
-            'To run your own, install the Miro Terminal app and start the terminal server on your ' +
+      body: 'A collaborator started this session on their own machine, so there is nothing here ' +
+            'for this browser to connect to.' +
+            '<br><br><strong>Install the Miro Terminal app</strong> to see this terminal\'s recent ' +
+            'command history, read straight from the board — no server of your own needed, and it ' +
+            'works even when their machine is off.' +
+            '<br><br>To run a terminal of your own as well, start the terminal server on your ' +
             'computer (see the project README).',
       meta: sessionName ? 'session: ' + sessionName : ''
     });
