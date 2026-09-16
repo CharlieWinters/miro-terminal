@@ -1,20 +1,42 @@
 # Miro Terminal
 
-A persistent terminal, embedded on a Miro board. Extracted from `miro-ide` into
-its own repo so the frontend/backend split matches `fal-miro` — **with one
-deliberate difference**: unlike `fal-miro`, the app frontend here is **not**
-hosted publicly. Every panel/headless call talks to `localhost` (that's the
-whole point — it's *your* terminal), and Chrome's Private Network Access
-policy blocks a publicly-hosted page from fetching `localhost` when it's
-nested inside Miro's iframe (confirmed live, not hypothetical — see
-`ARCHITECTURE.md`). So: **the app (`index.html`/`app.html`) runs from your own
-machine** alongside the backend, same as local dev always has. The **only**
-thing hosted publicly (GitHub Pages) is `terminal-wrapper/` — the State A/B
-fallback page every *other* viewer's browser loads for the embed, regardless
-of whose machine is actually running it.
+A persistent terminal, embedded on a Miro board.
 
-See `ARCHITECTURE.md` for the full design and the linked Miro board for the
-decision history.
+**The app is hosted publicly (GitHub Pages) and anyone on a board can install
+it.** Doing so is what lets a collaborator read a terminal's recent command
+history — that history lives in the embed's board metadata, and metadata is
+scoped per item *per app*, so only an iframe of this app can see it. Installing
+the app does not let anyone run anything: it has no way to reach your machine.
+
+The surfaces that *do* need your terminal server are served **by** that server,
+from your own machine:
+
+| Surface | Served from | Does |
+| --- | --- | --- |
+| headless + settings panel | GitHub Pages | reads and writes the board, opens the others |
+| `spawner.html` | your machine | starts sessions, browses your folders |
+| `terminal.html` | your machine | the terminal itself, opened as a modal |
+| `terminal-wrapper/` | GitHub Pages | what every board viewer sees in the embed |
+
+They are opened with absolute `http(s)://localhost` URLs — both `openModal` and
+`openPanel` accept them — and they hand board work back to the app over
+`postMessage`. They have to: a Miro surface on a foreign origin loads the Web
+SDK but never completes its connection handshake, so board calls from there
+throw. Conversely nothing on the app's public origin can reach `localhost`;
+Chrome's Local Network Access blocks it, including iframe navigation. Board
+work on the app origin, terminal work on your machine, `postMessage` between —
+that split is the whole architecture, and it is not optional.
+
+## Prerequisites
+
+- **The terminal server must be HTTPS, with a trusted certificate.** Use
+  [mkcert](https://github.com/FiloSottile/mkcert) and install its CA. A cert
+  warning cannot show an interstitial inside a board modal — it just fails
+  silently, with nothing in the console to explain it.
+- Plain `http://localhost:3001` will refuse the connection outright once
+  `SSL_KEY_PATH`/`SSL_CERT_PATH` are set. Always `https` for that port.
+- Your backend URL is stored in `localStorage` on the **app's** origin. It does
+  not follow you across browsers, profiles, or an app that changes origin.
 
 ## Layout
 

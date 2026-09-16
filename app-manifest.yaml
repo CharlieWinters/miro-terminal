@@ -1,21 +1,28 @@
 # Paste into the "App Manifest" section of your Miro app at
 # https://miro.com/app/settings/user-profile/apps/  (after creating an app).
 #
-# This app runs from YOUR OWN machine, alongside your backend — not hosted
-# publicly. Every panel/headless call talks to localhost, so it needs to
-# stay same-address-space (loopback) as the backend or Chrome's Private
-# Network Access policy blocks it; a publicly-hosted frontend fetching
-# localhost from inside Miro's iframe hits exactly that wall (see
-# ARCHITECTURE.md). Only the terminal-wrapper page (State A/B fallback,
-# shown to every OTHER viewer regardless of whose machine it is) needs to be
-# publicly hosted — that's still on GitHub Pages, unchanged.
+# This app is hosted PUBLICLY, so anyone on a board can install it and see a
+# terminal's command history — that history lives in the embed's board
+# metadata, and metadata is scoped per item per app, so only an iframe of this
+# app can read it.
 #
-# Run `cd frontend && npm run dev` and use whatever URL it prints below.
+# Nothing here ever needs to reach localhost, which is what makes public
+# hosting possible. The surfaces that DO need the terminal server are served by
+# the terminal server itself, on the developer's own machine:
+#
+#   spawner.html   starts sessions and browses folders   (localhost:3001)
+#   terminal.html  the terminal, opened as a modal       (localhost:3001)
+#
+# Those are opened with absolute URLs — openModal and openPanel both accept
+# them — and they hand board work back to this app over postMessage, because a
+# foreign-origin surface loads the Web SDK but never completes its connection.
+#
+# Publish with `cd frontend && npm run pages:publish`.
 
 appName: Miro Terminal
 sdkVersion: SDK_V2
 
-sdkUri: http://localhost:5173/index.html
+sdkUri: https://charliewinters.github.io/miro-terminal/app/index.html
 
 scopes:
   - boards:read
@@ -23,7 +30,7 @@ scopes:
   - identity:read
 
 redirectUris:
-  - http://localhost:5173/
+  - https://charliewinters.github.io/miro-terminal/app/
 
 # TODO: no icon has been designed yet — Miro's app settings form may require
 # one to save the manifest; a placeholder icon URL will just 404. Host a real
@@ -33,4 +40,5 @@ icons:
     size: 24
 
 # When the user clicks the app icon, the headless (sdkUri) iframe loads and
-# calls miro.board.ui.openPanel({ url: 'app.html' }).
+# opens the spawner panel on the developer's own machine — or, on first run
+# when no backend URL is saved in this browser, app.html to collect one.
