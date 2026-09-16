@@ -64,6 +64,7 @@ interface EmbedWidget {
   id: string;
   type: string;
   url?: string;
+  connectorIds?: string[];
   getMetadata?: <T>(key: string) => Promise<T>;
 }
 
@@ -105,6 +106,19 @@ function sidFromEmbedUrl(embed: EmbedWidget): string | null {
   }
 }
 
+/** Written by the terminal itself, from inside the modal — see the history
+ * section of backend/public/terminal.html. Lives in the embed widget's own
+ * metadata: invisible, deleted with the terminal, and it never lands in a
+ * collaborator's undo stack the way editing item content would. */
+const HISTORY_METADATA_KEY = 'miro-terminal-history';
+
+export interface TerminalHistory {
+  lines: string;
+  sessionName: string | null;
+  updatedAt: string | null;
+  by: string | null;
+}
+
 export interface BridgeState {
   hasApp: true;
   backendConfigured: boolean;
@@ -112,6 +126,7 @@ export interface BridgeState {
   hasThisSession: boolean;
   terminalBase: string | null;
   embedOnBoard: boolean;
+  history: TerminalHistory | null;
 }
 
 /**
@@ -129,7 +144,24 @@ async function collectState(embedId: string): Promise<BridgeState> {
     hasThisSession: false,
     terminalBase: backend?.terminalBase ?? null,
     embedOnBoard: false,
+    history: null,
   };
+
+  // Read history before anything else, and independently of the server: it is
+  // board data, so it survives the terminal being stopped and the machine being
+  // shut. It is the one useful thing to show a viewer who has no server at all,
+  // which is the whole point of keeping it on the board.
+  const embed = await findEmbedByEmbedId(embedId);
+  state.embedOnBoard = Boolean(embed);
+  if (embed) {
+    try {
+      const history = await embed.getMetadata?.<TerminalHistory>(HISTORY_METADATA_KEY);
+      if (history?.lines) state.history = history;
+    } catch {
+      // No history written yet.
+    }
+  }
+
   if (!backend?.terminalBase) return state;
 
   try {
@@ -139,8 +171,6 @@ async function collectState(embedId: string): Promise<BridgeState> {
     return state; // nothing else is knowable if the server is not answering
   }
 
-  const embed = await findEmbedByEmbedId(embedId);
-  state.embedOnBoard = Boolean(embed);
   const sid = embed ? sidFromEmbedUrl(embed) : null;
   if (!sid) return state;
 

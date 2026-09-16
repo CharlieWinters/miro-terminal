@@ -6,6 +6,13 @@
   <title>Terminal</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
+  <!-- Loaded so this page can act as a Miro app surface when it is opened as a
+       modal or panel: that gives it miro.board, which is how it reads board
+       context directly (see readContextFromSdk) and writes terminal history to
+       the embed widget's metadata. Harmless when this page is loaded as a plain
+       board embed instead — miro.board is simply absent and the HTTP fallbacks
+       are used, which is how the solo local-dev flow keeps working. -->
+  <script src="https://miro.com/app/static/sdk/v2/miro.js"></script>
 </head>
 <body>
   <div id="status-bar">
@@ -605,6 +612,9 @@
               case 'data':
                 // Use highlighted write for output
                 term.writeWithHighlight(msg.data);
+                // Mirror a stripped copy onto the board (debounced — see the
+                // history section above). No-ops when there is no SDK.
+                appendHistory(msg.data);
                 break;
                 
               case 'error':
@@ -658,10 +668,221 @@
        * When viewport is missing we signal "context requested" so the Miro app
        * can push; we retry once after a short delay to pick it up.
        */
+      // -----------------------------------------------------------------------
+      // Terminal history, written onto the board
+      //
+      // This is what a collaborator sees in the embed: they have no server of
+      // their own, so without this the embed can only say "runs elsewhere".
+      //
+      // Lives in the embed widget's own metadata rather than in a visible item,
+      // for three reasons: it is invisible so there is nothing to lay out or
+      // hide behind the embed, it is deleted automatically with the terminal it
+      // belongs to, and it does not land in every collaborator's undo stack the
+      // way editing item content does.
+      //
+      // Deliberately NOT the scrollback. Metadata caps at roughly 6 KB per item
+      // per app, and SCROLLBACK_BYTES is 200 KB — the backend keeps the real
+      // buffer and replays it on connect. This is a readout: the last N lines,
+      // ANSI stripped, so it stays legible as text. A snapshot of a redrawing
+      // TUI is noise, and trying to preserve one would mean storing escape
+      // codes we have no room for.
+      // -----------------------------------------------------------------------
+      const HISTORY_METADATA_KEY = 'miro-terminal-history';
+      const HISTORY_MAX_LINES = 50;
+      const HISTORY_MAX_BYTES = 5000;   // under the ~6 KB cap, with room for the envelope
+      const HISTORY_DEBOUNCE_MS = 4000; // output arrives per keystroke; writes must not
+
+      let historyBuffer = '';
+      let historyTimer = null;
+      let historyDirty = false;
+
+      /** Strips ANSI/VT escape sequences and carriage-return overwrites, so a
+       * progress bar or a spinner collapses to its final state instead of
+       * filling the budget with redraws. */
+      function stripAnsi(text) {
+        return String(text)
+          .replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, '')
+          .replace(/\u001b[\]P^_][^\u0007\u001b]*(\u0007|\u001b\\)?/g, '')
+          .replace(/\u001b[=><]/g, '')
+          .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+      }
+
+      function appendHistory(chunk) {
+        historyBuffer += stripAnsi(chunk);
+        // Collapse CR overwrites line by line: keep only what survives.
+        const lines = historyBuffer.split('\n').map(function (line) {
+          const parts = line.split('\r');
+          return parts[parts.length - 1];
+        });
+        historyBuffer = lines.slice(-HISTORY_MAX_LINES).join('\n');
+        while (new TextEncoder().encode(historyBuffer).length > HISTORY_MAX_BYTES) {
+          const cut = historyBuffer.indexOf('\n');
+          if (cut === -1) { historyBuffer = historyBuffer.slice(-HISTORY_MAX_BYTES); break; }
+          historyBuffer = historyBuffer.slice(cut + 1);
+        }
+        historyDirty = true;
+        scheduleHistoryWrite();
+      }
+
+      function scheduleHistoryWrite() {
+        if (!hasSdk() || historyTimer) return;
+        historyTimer = setTimeout(function () {
+          historyTimer = null;
+          flushHistory();
+        }, HISTORY_DEBOUNCE_MS);
+      }
+
+      async function flushHistory() {
+        if (!historyDirty || !hasSdk()) return;
+        historyDirty = false;
+        try {
+          const embed = await findOwnEmbed();
+          if (!embed) return;
+          // Attribution is for display only. It is board content, so it is
+          // readable and forgeable by anyone with board access — never treat it
+          // as a permission.
+          let userName = null;
+          try {
+            const user = await miro.board.getUserInfo();
+            userName = user && (user.name || user.id) || null;
+          } catch (e) { /* identity scope may not be granted */ }
+
+          await embed.setMetadata(HISTORY_METADATA_KEY, {
+            lines: historyBuffer,
+            sessionName: name || null,   // `name` = the ?name= URL param (line 106)
+            updatedAt: new Date().toISOString(),
+            by: userName,
+          });
+        } catch (e) {
+          console.warn('[history] write failed:', e);
+        }
+      }
+
+      // Last chance to persist what is on screen when the modal closes.
+      window.addEventListener('pagehide', function () { flushHistory(); });
+
+      /** True when this page is running as a Miro app surface (modal or panel)
+       * rather than as a plain board embed. Only then is board data readable
+       * from here directly. */
+      function hasSdk() {
+        return Boolean(window.miro && window.miro.board);
+      }
+
+      function stripHtml(html) {
+        return String(html == null ? '' : html)
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .trim();
+      }
+
+      /** Only some item types expose readable text; cards keep theirs in
+       * title/description rather than content. Anything unreadable falls back
+       * to a board link, which is the only useful thing left to give. */
+      function readItemText(item) {
+        if (item.type === 'sticky_note' || item.type === 'text' || item.type === 'shape') {
+          return stripHtml(item.content) || null;
+        }
+        if (item.type === 'card' || item.type === 'app_card') {
+          const parts = [stripHtml(item.title), stripHtml(item.description)].filter(Boolean);
+          return parts.length ? parts.join('\n') : null;
+        }
+        if (item.type === 'frame') return stripHtml(item.title) || null;
+        return null;
+      }
+
+      /** Finds this terminal's own embed widget on the board, by the metadata
+       * key the app stamps at creation. */
+      async function findOwnEmbed() {
+        const embeds = await miro.board.get({ type: 'embed' });
+        for (const embed of embeds) {
+          try {
+            const meta = await embed.getMetadata('miro-terminal');
+            if (meta && meta.embedId === embedId) return embed;
+          } catch (e) {
+            /* not one of ours */
+          }
+        }
+        return null;
+      }
+
+      /**
+       * Reads connected board items straight through the Web SDK.
+       *
+       * This replaces an HTTP round trip that only ever existed because this
+       * page used to have no SDK: the app iframe pushed context to the terminal
+       * server every 10s, this page polled it back, and a "please push now"
+       * signal tried to paper over the latency. Opened as a modal, this page is
+       * a real app surface, so it can just look.
+       *
+       * The labelling rule is unchanged: the label lives on the CONNECTOR's
+       * caption, not on the item, so an item's own content is never parsed or
+       * modified. A caption starting with "link" resolves to the item's board
+       * link instead of its content.
+       */
+      async function readContextFromSdk() {
+        const embed = await findOwnEmbed();
+        if (!embed) {
+          console.warn('[context] this terminal has no embed widget on the board');
+          return { input: '', named: {}, viewport: null };
+        }
+
+        const [boardInfo, viewport] = await Promise.all([
+          miro.board.getInfo(),
+          miro.board.viewport.get(),
+        ]);
+
+        const connectorIds = embed.connectorIds || [];
+        const connectors = connectorIds.length
+          ? await miro.board.get({ id: connectorIds })
+          : [];
+
+        const pairs = [];
+        for (const c of connectors) {
+          const startItem = c.start && c.start.item;
+          const endItem = c.end && c.end.item;
+          const other = startItem === embed.id ? endItem : endItem === embed.id ? startItem : undefined;
+          if (!other) continue;
+          pairs.push({ itemId: other, label: stripHtml(c.captions && c.captions[0] && c.captions[0].content) || null });
+        }
+
+        const items = pairs.length ? await miro.board.get({ id: pairs.map((p) => p.itemId) }) : [];
+        const byId = new Map(items.map((i) => [i.id, i]));
+
+        const inputParts = [];
+        const named = {};
+        for (const { itemId, label } of pairs) {
+          const item = byId.get(itemId);
+          if (!item) continue;
+          const link = `https://miro.com/app/board/${boardInfo.id}/?moveToWidget=${itemId}&cot=14`;
+          const text = readItemText(item);
+          if (label) {
+            named[label] = /^link/i.test(label) ? link : (text || link);
+          } else {
+            inputParts.push(text || link);
+          }
+        }
+
+        return { input: inputParts.join('\n'), named, viewport };
+      }
+
       async function requestContext() {
         if (!embedId) {
           console.warn('No embedId – cannot fetch context');
           return { input: '', named: {}, viewport: null };
+        }
+
+        // Preferred path: read the board directly. Falls through to the HTTP
+        // relay below only when there is no SDK — i.e. this page is a plain
+        // board embed, not a modal.
+        if (hasSdk()) {
+          try {
+            const ctx = await readContextFromSdk();
+            lastContextFetch = { at: new Date().toISOString(), ...ctx, via: 'sdk' };
+            console.log('[context] via SDK: input=', ctx.input.length, 'char(s), named=', Object.keys(ctx.named));
+            return ctx;
+          } catch (e) {
+            console.warn('[context] SDK read failed, falling back to the relay:', e);
+          }
         }
 
         // Signal that this embed needs context; Miro app polls and will push.
@@ -693,7 +914,7 @@
           }
         }
 
-        lastContextFetch = { at: new Date().toISOString(), input, named, viewport };
+        lastContextFetch = { at: new Date().toISOString(), input, named, viewport, via: 'http-relay' };
         console.log('Fetched context: embedId=', embedId, 'input=', input.length, 'char(s), named=', Object.keys(named), 'viewport=', viewport ? 'yes' : 'no');
         return { input, named, viewport };
       }
