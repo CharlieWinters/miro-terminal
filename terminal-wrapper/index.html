@@ -44,6 +44,23 @@
     button:disabled { opacity: .55; cursor: default; }
     .err { color: var(--bad); font-size: .85rem; margin-top: .6rem; }
     .meta { font-size: .78rem; color: #5c6b80; margin-top: .9rem; }
+    /* History readout. Deliberately a plain <pre>, not an xterm: what is stored
+       is ANSI-stripped text (see terminal.html), so rendering it as a terminal
+       would imply a fidelity it does not have. */
+    #history-wrap { display: none; width: 100%; max-width: 46rem; }
+    #history-wrap.visible { display: block; }
+    #history-head {
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 1rem; margin-bottom: .4rem; font-size: .78rem; color: var(--muted);
+    }
+    #history {
+      margin: 0; padding: .8rem .9rem; max-height: 18rem; overflow: auto;
+      background: #0b1016; border: 1px solid var(--border); border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+      color: #c9d6e3;
+    }
+    #root.with-history { flex-direction: column; gap: 1rem; }
   </style>
 </head>
 <body>
@@ -55,6 +72,13 @@
       <button type="button" id="dev-btn" hidden>Open in developer mode</button>
       <p class="err" id="err" hidden></p>
       <p class="meta" id="meta" hidden></p>
+    </div>
+    <div id="history-wrap">
+      <div id="history-head">
+        <span id="history-label">Last output</span>
+        <span id="history-when"></span>
+      </div>
+      <pre id="history"></pre>
     </div>
   </div>
 
@@ -111,6 +135,33 @@
     if (opts.meta) { metaEl.hidden = false; metaEl.textContent = opts.meta; }
   }
 
+  /**
+   * Shows the stored readout. This is board data, not a live feed: it survives
+   * the terminal being stopped and the machine being shut, which is exactly why
+   * it lives on the board rather than being streamed.
+   *
+   * Note it can only appear for a viewer whose browser has an app iframe to
+   * read the board through. While sdkUri is on localhost that means the
+   * developer only; once the app is hosted publicly, every viewer who installs
+   * it gets this too, which is the point of the move.
+   */
+  function renderHistory(history) {
+    if (!history || !history.lines) return;
+    var wrap = document.getElementById('history-wrap');
+    document.getElementById('history').textContent = history.lines;
+    var label = 'Last output';
+    if (history.sessionName) label += ' — ' + history.sessionName;
+    if (history.by) label += ' · ' + history.by;
+    document.getElementById('history-label').textContent = label;
+    if (history.updatedAt) {
+      var when = new Date(history.updatedAt);
+      document.getElementById('history-when').textContent =
+        isNaN(when.getTime()) ? '' : when.toLocaleString();
+    }
+    wrap.classList.add('visible');
+    document.getElementById('root').classList.add('with-history');
+  }
+
   function showError(msg) {
     errEl.hidden = false;
     errEl.textContent = msg;
@@ -150,6 +201,7 @@
 
   function applyState(s) {
     settled = true;
+    renderHistory(s.history);
 
     // The app is here and holds this exact session: this is the developer.
     if (s.backendReachable && s.hasThisSession) {
@@ -183,7 +235,8 @@
       render({
         dot: 'warn',
         title: 'Your terminal server is not responding',
-        body: 'The app is looking for <code>' + s.terminalBase + '</code> but nothing answered. ' +
+        body: (s.history ? 'The output below is the last thing this terminal wrote, read from the board. ' : '') +
+              'The app is looking for <code>' + s.terminalBase + '</code> but nothing answered. ' +
               'Start it with <code>npm start</code> in <code>backend/</code>, then reload the board. ' +
               'It must be served over HTTPS with a trusted certificate — a cert warning cannot be ' +
               'shown inside a board embed, so it fails silently.'
