@@ -115,7 +115,8 @@
 
   var MSG = {
     hello: 'mt:hello', state: 'mt:state', openDev: 'mt:open-dev',
-    opened: 'mt:opened', error: 'mt:error', appReady: 'mt:app-ready'
+    opened: 'mt:opened', error: 'mt:error', appReady: 'mt:app-ready',
+    historyChanged: 'mt:history-changed'
   };
   var MAX_ATTEMPTS = 6;
   var RETRY_MS = 700;
@@ -214,6 +215,7 @@
   function applyState(s) {
     settled = true;
     renderHistory(s.history);
+    startRefresh();
 
     // The app is here and holds this exact session: this is the developer.
     if (s.backendReachable && s.hasThisSession) {
@@ -290,6 +292,10 @@
     if (d.type === MSG.appReady && !settled) { post({ type: MSG.hello, v: 1, embedId: embedId }); return; }
     if (d.embedId && d.embedId !== embedId) return;
 
+    // The terminal just wrote new history. Re-ask rather than trusting the
+    // nudge to carry it, so there is one code path that renders state.
+    if (d.type === MSG.historyChanged) { post({ type: MSG.hello, v: 1, embedId: embedId }); return; }
+
     if (d.type === MSG.state) { applyState(d); return; }
     if (d.type === MSG.opened) { devBtn.disabled = false; errEl.hidden = true; return; }
     if (d.type === MSG.error) {
@@ -306,6 +312,23 @@
     // Re-enable even if no answer comes back, so the button is never stuck.
     setTimeout(function () { devBtn.disabled = false; }, 4000);
   });
+
+  // Safety net behind the history-changed push: covers a nudge arriving while
+  // this frame was still loading, or a write made by a different browser
+  // entirely. Slow on purpose — the push is what makes it feel live, and this
+  // only has to stop the embed going permanently stale. Paused while the tab is
+  // hidden, since a board nobody is looking at does not need refreshing.
+  var REFRESH_MS = 20000;
+  var refreshTimer = null;
+
+  function startRefresh() {
+    if (refreshTimer) return;
+    refreshTimer = setInterval(function () {
+      if (document.visibilityState === 'visible') {
+        post({ type: MSG.hello, v: 1, embedId: embedId });
+      }
+    }, REFRESH_MS);
+  }
 
   var attempts = 0;
   post({ type: MSG.hello, v: 1, embedId: embedId }); attempts++;
