@@ -467,6 +467,24 @@ app.post('/api/context/:embedId/request', (req, res) => {
   res.json({ ok: true });
 });
 
+// Does this session exist on THIS machine? The wrapper cannot ask (it is a
+// public page and cannot reach loopback), so the app iframe asks on its behalf
+// and relays the answer over postMessage. This is what lets the embed tell
+// "no server here" apart from "server running, but this session belongs to
+// someone else's machine" — the two cases that used to collapse into one
+// misleading message. Unauthenticated, like /health: it reveals only whether
+// an id is present, to a caller who already has loopback access.
+app.get('/api/pty/:sid', (req, res) => {
+  const session = sessions.get(req.params.sid);
+  if (!session) return res.json({ exists: false });
+  res.json({
+    exists: true,
+    name: session.name || null,
+    cwd: session.cwd || null,
+    lastSeen: session.lastSeen || null,
+  });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ 

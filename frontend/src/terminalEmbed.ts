@@ -14,11 +14,16 @@ import { getBackendConfig, type BackendConfig } from './backendConfig';
 /** Metadata key used to tag every terminal embed on the board, so the
  * headless iframe can rediscover them (and resume pushing context for them)
  * on every board load — independent of whichever panel session created them. */
-const METADATA_KEY = 'miro-terminal';
+export const METADATA_KEY = 'miro-terminal';
 
-/** Build the URL stored on the Miro embed widget: either the terminal server
- * directly, or the shared wrapper (with terminalBase + session query params)
- * that health-checks this viewer's own machine before deciding what to show. */
+/** Build the URL stored on the Miro embed widget.
+ *
+ * Two shapes. With no wrapperUrl it points straight at the terminal server —
+ * the solo local-dev path, where the embed IS a live terminal because a
+ * localhost page framing localhost never crosses an address-space boundary.
+ * With a wrapperUrl it points at the public wrapper, which is what every OTHER
+ * board viewer loads; that page cannot reach localhost at all (Local Network
+ * Access), so it asks the app iframe over postMessage instead. */
 export function buildMiroEmbedUrl(
   wrapperUrl: string,
   terminalBase: string,
@@ -33,8 +38,17 @@ export function buildMiroEmbedUrl(
   const inner = new URL(terminalUrlFromApi, 'http://miro-terminal.invalid');
   const wrapBase = wrapperUrl.endsWith('/') ? wrapperUrl : `${wrapperUrl}/`;
   const wrapper = new URL(wrapBase);
-  wrapper.searchParams.set('terminalBase', terminalBase);
-  inner.searchParams.forEach((v, k) => wrapper.searchParams.set(k, v));
+  // Deliberately NOT forwarding `token`, and no longer forwarding
+  // `terminalBase` either. The wrapper is a public page whose URL is stored as
+  // board content — readable by anyone with board access, and by the REST API —
+  // so a PTY token has no business being in it. It also has no use for one:
+  // the wrapper never talks to the terminal server. It asks the app iframe,
+  // which mints a fresh token at the moment the modal opens (see
+  // hostBridge.ts — the board URL outlives TOKEN_TTL, a token does not).
+  inner.searchParams.forEach((v, k) => {
+    if (k === 'token') return;
+    wrapper.searchParams.set(k, v);
+  });
   for (const [k, v] of Object.entries(extraParams)) wrapper.searchParams.set(k, v);
   return wrapper.toString();
 }
@@ -301,7 +315,15 @@ export async function createTerminalEmbed(
   const ptyResponse = await startTerminalSession(backend.terminalBase, embedOptions?.cwd);
 
   const embedId = generateEmbedId();
-  const extraParams: Record<string, string> = { embedId, boardId, boardName };
+  // appOrigins tells the wrapper which exact origin to postMessage — never '*',
+  // which would hand the message to every other frame on the board. Taken from
+  // this iframe rather than hardcoded so it follows whatever port Vite picked.
+  const extraParams: Record<string, string> = {
+    embedId,
+    boardId,
+    boardName,
+    appOrigins: window.location.origin,
+  };
   if (embedOptions?.sessionName) extraParams.name = embedOptions.sessionName;
   if (embedOptions?.cwd) extraParams.cwd = embedOptions.cwd;
 
