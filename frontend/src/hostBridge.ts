@@ -67,6 +67,7 @@ const MSG = {
   ctx: 'mt:ctx',
   historyWrite: 'mt:history-write',
   historyOk: 'mt:history-ok',
+  historyChanged: 'mt:history-changed',
   error: 'mt:error',
   appReady: 'mt:app-ready',
 } as const;
@@ -395,6 +396,11 @@ async function handle(event: MessageEvent): Promise<void> {
       setMetadata: (k: string, v: unknown) => Promise<void>;
     }).setMetadata(HISTORY_METADATA_KEY, { ...data.history, by });
     reply(event, { type: MSG.historyOk, v: 1, embedId, ok: true });
+    // Nudge the embed so it picks this up without the board being reloaded.
+    // Pushed rather than polled: the wrapper has no way to know a write
+    // happened, and polling every embed's metadata on a timer to find out
+    // would be wasteful for an event we already know about here.
+    broadcast({ type: MSG.historyChanged, v: 1, embedId });
     return;
   }
 
@@ -411,11 +417,12 @@ async function handle(event: MessageEvent): Promise<void> {
   }
 }
 
-/** Posts an unsolicited hello to every frame, covering the case where this
- * iframe finishes loading after an embed has already stopped asking. Cannot
- * reach a sandboxed embed (an exact targetOrigin never matches "null"), so the
- * embed's own retry loop remains the path that has to work. */
-function announce(): void {
+/** Posts a message to every frame on the page, at each allowed origin. Used
+ * for the unsolicited hello and for history-changed nudges — neither has a
+ * known recipient window, so both have to go wide. Cannot reach a sandboxed
+ * embed (an exact targetOrigin never matches "null"), so an embed's own retry
+ * loop remains the path that has to work. */
+function broadcast(message: Record<string, unknown>): void {
   const targets: Window[] = [];
   const collect = (win: Window, depth: number): void => {
     if (depth > 8 || targets.length > 200) return;
@@ -440,9 +447,9 @@ function announce(): void {
     return;
   }
   for (const win of targets) {
-    for (const origin of ALLOWED_EMBED_ORIGINS) {
+    for (const origin of allowedOrigins()) {
       try {
-        win.postMessage({ type: MSG.appReady, v: 1 }, origin);
+        win.postMessage(message, origin);
       } catch {
         /* ignore */
       }
@@ -454,6 +461,6 @@ export function initHostBridge(): void {
   window.addEventListener('message', (event) => {
     handle(event).catch((err) => console.error('[bridge] handler error:', err));
   });
-  announce();
+  broadcast({ type: MSG.appReady, v: 1 });
   console.log('[bridge] listening at', window.location.origin);
 }

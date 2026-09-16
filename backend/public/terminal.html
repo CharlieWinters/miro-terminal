@@ -611,9 +611,9 @@
               case 'data':
                 // Use highlighted write for output
                 term.writeWithHighlight(msg.data);
-                // Mirror a stripped copy onto the board (debounced — see the
-                // history section above). No-ops when there is no SDK.
-                appendHistory(msg.data);
+                // Mark the board copy stale; a screen snapshot is taken when
+                // the debounce fires (see the history section above).
+                appendHistory();
                 break;
                 
               case 'error':
@@ -691,34 +691,52 @@
       const HISTORY_MAX_BYTES = 5000;   // under the ~6 KB cap, with room for the envelope
       const HISTORY_DEBOUNCE_MS = 4000; // output arrives per keystroke; writes must not
 
-      let historyBuffer = '';
       let historyTimer = null;
       let historyDirty = false;
 
-      /** Strips ANSI/VT escape sequences and carriage-return overwrites, so a
-       * progress bar or a spinner collapses to its final state instead of
-       * filling the budget with redraws. */
-      function stripAnsi(text) {
-        return String(text)
-          .replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, '')
-          .replace(/\u001b[\]P^_][^\u0007\u001b]*(\u0007|\u001b\\)?/g, '')
-          .replace(/\u001b[=><]/g, '')
-          .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+      /**
+       * Takes the last N lines of what is actually ON SCREEN, from xterm's own
+       * buffer.
+       *
+       * The first attempt at this stripped ANSI codes out of the raw PTY stream
+       * and tried to rebuild the text itself. That produces plausible-looking
+       * nonsense: a terminal positions content with cursor-movement escapes, so
+       * once those are stripped the remainder concatenates in STREAM order
+       * rather than SCREEN order. Prompts, completions and redraws all land in
+       * the wrong place, which is exactly what it looked like — history that
+       * was populated, timestamped and wrong.
+       *
+       * xterm has already done this work. buffer.active holds the rendered
+       * grid, with escapes, carriage returns and overwrites resolved, and
+       * translateToString gives a line back as plain text. Reading the screen is
+       * both simpler and correct by construction.
+       */
+      function snapshotScreen() {
+        const buf = term.buffer.active;
+        const total = buf.length;                   // scrollback plus viewport
+        const from = Math.max(0, total - HISTORY_MAX_LINES);
+        const lines = [];
+        for (let i = from; i < total; i++) {
+          const line = buf.getLine(i);
+          lines.push(line ? line.translateToString(true) : '');
+        }
+        // Trailing blanks are just the unused rows below the cursor.
+        while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+
+        let text = lines.join('\n');
+        // Trim from the front to fit the metadata budget.
+        while (new TextEncoder().encode(text).length > HISTORY_MAX_BYTES) {
+          const cut = text.indexOf('\n');
+          if (cut === -1) { text = text.slice(-HISTORY_MAX_BYTES); break; }
+          text = text.slice(cut + 1);
+        }
+        return text;
       }
 
-      function appendHistory(chunk) {
-        historyBuffer += stripAnsi(chunk);
-        // Collapse CR overwrites line by line: keep only what survives.
-        const lines = historyBuffer.split('\n').map(function (line) {
-          const parts = line.split('\r');
-          return parts[parts.length - 1];
-        });
-        historyBuffer = lines.slice(-HISTORY_MAX_LINES).join('\n');
-        while (new TextEncoder().encode(historyBuffer).length > HISTORY_MAX_BYTES) {
-          const cut = historyBuffer.indexOf('\n');
-          if (cut === -1) { historyBuffer = historyBuffer.slice(-HISTORY_MAX_BYTES); break; }
-          historyBuffer = historyBuffer.slice(cut + 1);
-        }
+      /** Output arrived; the screen is now newer than what the board holds. The
+       * snapshot itself is taken at flush time, not here — there is no point
+       * rendering a screen we are about to overwrite. */
+      function appendHistory() {
         historyDirty = true;
         scheduleHistoryWrite();
       }
@@ -741,7 +759,7 @@
             {
               type: 'mt:history-write',
               history: {
-                lines: historyBuffer,
+                lines: snapshotScreen(),
                 sessionName: name || null,   // `name` = the ?name= URL param
                 updatedAt: new Date().toISOString(),
                 by: null,
