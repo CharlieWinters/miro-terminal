@@ -9,7 +9,7 @@
  * items connected to the terminal embed via connectors — see ARCHITECTURE.md.
  */
 
-import { getBackendConfig, type BackendConfig } from './backendConfig';
+import { getBackendConfig, canReachLoopback } from './backendConfig';
 
 /** Metadata key used to tag every terminal embed on the board, so the
  * headless iframe can rediscover them (and resume pushing context for them)
@@ -53,12 +53,6 @@ export function buildMiroEmbedUrl(
   return wrapper.toString();
 }
 
-interface PtyStartResponse {
-  sid: string;
-  url: string;
-  wsUrl?: string;
-}
-
 /** input: joined text for the [INPUT] token (unlabelled connectors only).
  * named: per-item bracket-token replacements, e.g. typing [FRONTEND_PROMPT]
  * or [LINK_1] in the terminal — see ARCHITECTURE.md for the labelling rule. */
@@ -74,23 +68,6 @@ let contextRefreshInterval: ReturnType<typeof setInterval> | null = null;
 const CONTEXT_REFRESH_MS = 10_000;
 let contextRequestPollInterval: ReturnType<typeof setInterval> | null = null;
 const CONTEXT_REQUEST_POLL_MS = 2_000;
-
-/** Deliberately no `sid` in the request — the backend reuses an existing
- * session when one is passed, which used to mean every terminal on a board
- * shared one PTY (and one cwd) since `sid` used to just be the board id.
- * Each "Create terminal" click should be its own independent shell; the
- * backend mints a fresh sid whenever one isn't supplied. */
-async function startTerminalSession(terminalBase: string, cwd?: string): Promise<PtyStartResponse> {
-  const response = await fetch(`${terminalBase}/api/pty/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cwd }),
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to start terminal session: ${response.status} ${await response.text()}`);
-  }
-  return response.json();
-}
 
 /** One entry per connector attached to the embed, carrying that connector's
  * own caption (the label lives on the line, not the sticky — so the sticky's
@@ -285,6 +262,14 @@ function startContextRefresh(): void {
  * whether the panel is open. No-ops quietly if this browser has no backend
  * configured yet. */
 export async function initTerminalContextSync(): Promise<void> {
+  // Guarded here as well as at the call site. The two remaining fetches in this
+  // file are the only ones left that address the terminal server, and from a
+  // public origin they are blocked — so this refuses rather than relying on
+  // every future caller remembering.
+  if (!canReachLoopback()) {
+    console.log('[Terminal] context relay skipped: this origin cannot reach loopback');
+    return;
+  }
   const backend = getBackendConfig();
   if (!backend) return;
   await discoverTerminalEmbeds();
@@ -350,54 +335,15 @@ export async function placeTerminalEmbed(
   return { embedId, widgetId: embed.id };
 }
 
-/** Starts a session AND places the embed. Only usable from a surface that can
- * reach the terminal server — i.e. while the app itself is served from
- * localhost. Kept for that case and for the solo local-dev flow. */
-export async function createTerminalEmbed(
-  backend: BackendConfig,
-  wrapperUrl: string,
-  embedOptions?: TerminalEmbedOptions
-): Promise<void> {
-  const boardInfo = await miro.board.getInfo();
-  const boardId = boardInfo.id;
-  const boardName = (boardInfo as { id: string; title?: string }).title || boardId;
-
-  const ptyResponse = await startTerminalSession(backend.terminalBase, embedOptions?.cwd);
-
-  const embedId = generateEmbedId();
-  // appOrigins tells the wrapper which exact origin to postMessage — never '*',
-  // which would hand the message to every other frame on the board. Taken from
-  // this iframe rather than hardcoded so it follows whatever port Vite picked.
-  const extraParams: Record<string, string> = {
-    embedId,
-    boardId,
-    boardName,
-    appOrigins: window.location.origin,
-  };
-  if (embedOptions?.sessionName) extraParams.name = embedOptions.sessionName;
-  if (embedOptions?.cwd) extraParams.cwd = embedOptions.cwd;
-
-  const fullUrl = buildMiroEmbedUrl(wrapperUrl, backend.terminalBase, ptyResponse.url, extraParams);
-
-  // Center of the current viewport, not the board origin — otherwise every
-  // terminal piles up at (0, 0) regardless of where you're actually looking.
-  const viewport = await miro.board.viewport.get();
-  const centerX = viewport.x + viewport.width / 2;
-  const centerY = viewport.y + viewport.height / 2;
-
-  const embed = await miro.board.createEmbed({
-    url: fullUrl,
-    x: centerX,
-    y: centerY,
-    origin: 'center',
-    width: 800,
-    height: 600,
-  });
-  embedIdToWidgetId.set(embedId, embed.id);
-  await embed.setMetadata(METADATA_KEY, { embedId });
-
-  await pushContextToServer(backend.terminalBase, embedId, embed.id);
-  startContextRefresh();
-
-  await miro.board.viewport.zoomTo(embed);
-}
+/* createTerminalEmbed and startTerminalSession used to live here. They started
+ * a pty session over fetch and placed the embed in one call.
+ *
+ * Both halves can no longer happen in one place: starting a session is a call
+ * to localhost, which only a surface served by the terminal server may make,
+ * while placing an embed needs a connected Web SDK, which such a surface never
+ * gets. So the spawner does the first and placeTerminalEmbed the second, and
+ * they talk over postMessage.
+ *
+ * Deleted rather than left unused. Dead code that fetches localhost is exactly
+ * what turned into a live bug three times while this app was moving origin.
+ */

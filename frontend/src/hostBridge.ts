@@ -102,7 +102,33 @@ interface EmbedWidget {
   getMetadata?: <T>(key: string) => Promise<T>;
 }
 
+/**
+ * Refuses, loudly and immediately, any request this origin cannot legally make.
+ *
+ * This has now been the same bug three times: a fetch at the terminal server
+ * left behind in an app surface that moved to public hosting. The browser's
+ * version of the complaint — "blocked by CORS policy: Permission was denied for
+ * this request to access the loopback address space" — names neither the caller
+ * nor the reason, and arrives as an unhandled rejection somewhere else entirely.
+ *
+ * Failing here instead makes the mistake self-describing at the call site.
+ */
 async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  let host = '';
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    /* relative or malformed — nothing to check */
+  }
+  const targetsLoopback =
+    host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
+  if (targetsLoopback && !canReachLoopback()) {
+    throw new Error(
+      `refusing to fetch ${url} from ${window.location.origin}: a public origin cannot ` +
+        'reach a loopback address. This work belongs on a surface served by the terminal ' +
+        'server, which then talks to this iframe over postMessage.'
+    );
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
@@ -317,12 +343,18 @@ async function collectState(embedId: string): Promise<BridgeState> {
 /**
  * Opens the real terminal for the developer.
  *
- * Deliberately re-runs /api/pty/start with the existing sid rather than reusing
- * the token sitting in the embed's URL: that token expires (TOKEN_TTL, 15
- * minutes by default) while the board URL does not, so a board opened an hour
- * later would hand the modal a dead token. Passing a known sid reuses the live
- * session and mints a fresh token — and if the session has since timed out, it
- * revives one under the same id, which is the behaviour you want anyway.
+ * Hands over the sid and nothing else. This used to POST /api/pty/start first,
+ * to mint a fresh token — the one in the embed's URL expires (TOKEN_TTL) while
+ * the board URL does not. But that fetch cannot happen from here any more, and
+ * it never needed to: the modal is served BY the terminal server, and its own
+ * startSession already mints a fresh token for whatever sid it is given. Doing
+ * it there is both the only place it works and one less place a token exists.
+ *
+ * The embedId matters: it is the key terminal.html looks board context up
+ * under, so without it the [INPUT] / [LABEL] / [LINK_x] tokens silently stop
+ * expanding — it logs "No embedId" and carries on. It also keys per-terminal
+ * local state, so passing it keeps this modal continuous with the same terminal
+ * opened any other way.
  */
 async function openDeveloperModal(embedId: string): Promise<void> {
   const backend = getBackendConfig();
@@ -333,26 +365,11 @@ async function openDeveloperModal(embedId: string): Promise<void> {
   const sid = sidFromEmbedUrl(embed);
   if (!sid) throw new Error('That embed has no session id in its URL.');
 
-  const res = await fetchWithTimeout(`${backend.terminalBase}/api/pty/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sid }),
-  });
-  if (!res.ok) {
-    throw new Error(`Terminal server refused to start a session: ${res.status}`);
-  }
-  const { url } = (await res.json()) as { url: string };
-
-  // /api/pty/start returns only sid and token, but terminal.html needs the
-  // embedId too: that is the key it looks board context up under, so without it
-  // the [INPUT] / [LABEL] / [LINK_x] tokens silently stop expanding (it logs
-  // "No embedId - cannot fetch context" and carries on). It also keys its local
-  // per-terminal state off embedId, so passing it keeps the modal continuous
-  // with the same terminal opened any other way.
-  const modalUrl = new URL(`${backend.terminalBase}${url}`);
+  const modalUrl = new URL(`${backend.terminalBase}/terminal.html`);
+  modalUrl.searchParams.set('sid', sid);
   modalUrl.searchParams.set('embedId', embedId);
-  // Where to send board work. The modal cannot use the SDK from its own
-  // origin, so it posts here instead; exact origin, never '*'.
+  // Where to send board work: the modal's own SDK never connects, being on a
+  // foreign origin, so it asks this iframe instead.
   modalUrl.searchParams.set('appOrigins', window.location.origin);
 
   await miro.board.ui.openModal({

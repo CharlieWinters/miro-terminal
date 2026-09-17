@@ -4,8 +4,9 @@ dist/
 *.pem
 .DS_Store
 
-# Staged copies of the terminal UI, placed next to the wrapper at publish time
-# so the same file can be served BOTH by the terminal server (as the modal) and
-# from public hosting (as a board embed). backend/public is the only source.
+# Everything Pages serves, assembled by scripts/stage-pages.mjs and published
+# as one directory in one gh-pages call. backend/public is the only source for
+# terminal.html and styles.css; the copies here are build output.
+frontend/.pages/
 frontend/terminal-wrapper/terminal.html
 frontend/terminal-wrapper/styles.css
