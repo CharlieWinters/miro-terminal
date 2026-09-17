@@ -35,27 +35,51 @@
   </style>
 </head>
 <body>
-  <section id="first-run" hidden>
-    <h3>Two things to set up</h3>
-    <ol>
-      <li><strong>Run the terminal server</strong> on your machine, over HTTPS with a trusted
-        certificate, then save its URL below. An untrusted certificate fails silently — a
-        warning cannot be shown inside a board.</li>
-      <li><strong>Install the relay app too</strong>, if you want to type into terminals on the
-        board rather than in a modal. It is a second Miro app, served from your own machine,
-        and it has to be opened once before it loads reliably.</li>
-    </ol>
-    <p>Nobody else needs either. Collaborators who install just this app can read a terminal's
-      command history from the board — that is all installing it does.</p>
-    <p><a href="https://github.com/CharlieWinters/miro-terminal#setup" target="_blank"
-          rel="noreferrer">Full setup instructions</a></p>
-    <hr />
+  <h3>Miro Terminal</h3>
+  <p>
+    Terminals live on the board as widgets. Each one runs on somebody's own machine — whoever
+    created it — and everyone else sees the commands it ran, read from the board.
+  </p>
+
+  <section id="viewer-note">
+    <p class="ok-note">
+      <strong>Nothing to set up to read them.</strong> Having this app installed is all a terminal's
+      history needs. It stays readable even when the machine running it is off.
+    </p>
   </section>
 
+  <hr />
+
+  <h3>Run your own terminals</h3>
+  <p>Three things, once. Terminals you create then appear on any board you open.</p>
+  <ol>
+    <li>
+      <strong>Run the terminal server</strong> on your machine, over HTTPS with a certificate your
+      browser trusts. An untrusted certificate fails <em>silently</em> — a warning cannot be shown
+      inside a board — so use <code>mkcert</code> and install its CA.
+    </li>
+    <li>
+      <strong>Save its address below.</strong> Kept in this browser only; every person runs their own.
+    </li>
+    <li>
+      <strong>Install the relay app</strong> and click its icon once. That is a second Miro app,
+      served from your machine, and it is what lets a terminal on the board be typed into — a
+      public page cannot reach your computer, so the relay holds the connection on its behalf.
+      Set <code>EMBED_ORIGINS</code> in its <code>.env</code> or it will refuse to connect.
+    </li>
+  </ol>
+  <p>
+    <a href="https://github.com/CharlieWinters/miro-terminal#setup" target="_blank"
+       rel="noreferrer">Full setup instructions</a> ·
+    <a href="https://github.com/CharlieWinters/miro-terminal/blob/main/SECURITY.md" target="_blank"
+       rel="noreferrer">What goes on the board</a>
+  </p>
+
+  <hr />
+
   <section id="backend-settings-section">
-    <h3>Backend</h3>
-    <p>URL of the terminal-server running on <strong>your</strong> machine. Stored only in this browser — every collaborator sets their own.</p>
-    <label for="backend-url">Backend URL</label>
+    <h3>Terminal server</h3>
+    <label for="backend-url">Address on this machine</label>
     <input type="text" id="backend-url" placeholder="https://localhost:3001" />
     <div class="backend-actions">
       <button type="button" id="save-backend-btn">Save</button>
@@ -66,19 +90,18 @@
 
   <hr />
 
-  <h3>New terminal</h3>
+  <h3>Create a terminal</h3>
   <p>
-    Opens the spawner, which is served by the terminal server on your machine — that is what lets
-    it browse your folders and start a session. This panel cannot: it runs on the app's origin,
-    and a public page is not allowed to reach localhost.
-  </p>
-  <p>
-    Once a terminal is on the board: connect a card or sticky to it with a connector, then type
-    <code>[INPUT]</code> in the terminal to pull in its text. Caption the connector to address
-    that item by name instead.
+    Opens the spawner, served from your own machine — which is what lets it browse your folders.
+    The relay app's icon opens it too.
   </p>
   <button type="button" id="open-spawner-btn">New terminal…</button>
   <p id="spawn-status"></p>
+  <p>
+    Once a terminal is on the board, connect a card or sticky to it with a connector and type
+    <code>[INPUT]</code> in the terminal to pull in its text. Caption the connector to address that
+    item by name instead.
+  </p>
 
   <script type="module" src="/src/panel.ts"></script>
 </body>

@@ -87,10 +87,15 @@ then lives at `https://YOUR-USER.github.io/miro-terminal/app/index.html`.
 
 **There are two, and live terminals need both.** This is the step people miss.
 
-| | App URL | Scopes | Who installs it |
-| --- | --- | --- | --- |
-| **Miro Terminal** | `https://YOUR-USER.github.io/miro-terminal/app/index.html` | `boards:read`, `boards:write`, `identity:read` | anyone who wants to see history |
-| **Miro Terminal relay** | `https://localhost:3001/relay.html` | none | only you |
+| | App URL | Scopes | Who installs it | Its icon opens |
+| --- | --- | --- | --- | --- |
+| **Miro Terminal** | `https://YOUR-USER.github.io/miro-terminal/app/index.html` | `boards:read`, `boards:write`, `identity:read` | anyone who wants to see history | the panel: what this is, setup, your server address |
+| **Miro Terminal relay** | `https://localhost:3001/relay.html` | none | only you | the spawner: create a terminal |
+
+The division is deliberate. The first app is the front door — it explains itself
+to somebody who just wants to read a terminal's history, which is most people.
+The second is the developer's tool, served from your own machine, and its icon
+does the developer's job.
 
 Paste `app-manifest.yaml` and `app-manifest-relay.yaml` into the two apps
 respectively, replacing `YOUR-USER`. Install both on your developer team.
@@ -119,9 +124,10 @@ origin.
 
 ## Using it
 
-**Create a terminal.** Click the app icon. With a server saved it opens the
-spawner, served from your own machine, which is what lets it browse your folders
-and start a session. Name it, pick a working directory, hit create.
+**Create a terminal.** Click the *relay* app's icon — or the New terminal button
+in the Miro Terminal panel. Either opens the spawner, served from your own
+machine, which is what lets it browse your folders and start a session. Name it,
+pick a working directory, hit create.
 
 **Type into it.** Either flip **Live** at the top of the embed and type on the
 board, or open it in a full-screen modal. Live mode is per-browser and off by

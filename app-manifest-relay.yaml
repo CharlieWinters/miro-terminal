@@ -34,7 +34,10 @@ sdkUri: https://localhost:3001/relay.html
 # None. It never touches the board.
 scopes: []
 
-# After installing, click its toolbar icon once. A second app's headless iframe
-# is only reliably loaded on a cold board load after the user has opened it at
-# least once — so without that click, live terminals work only on the board
-# where you installed it, until you happen to open it.
+# Its icon opens the terminal spawner, which is the developer's job and belongs
+# with the developer's app. Relay status stays at relay.html, linked from there.
+#
+# Click the icon once after installing regardless: a second app's headless
+# iframe is only reliably loaded on a cold board load after the user has opened
+# the app at least once — so without that click, live terminals work only
+# sporadically.

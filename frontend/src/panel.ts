@@ -26,15 +26,15 @@ function setBackendStatus(text: string, kind: 'ok' | 'error' | '' = ''): void {
 
 function refreshBackendStatus(): void {
   const existing = getBackendConfig();
-  // Shown only until a backend is saved. After that it is noise, and the panel
-  // is something you open to spawn a terminal rather than to read.
-  document.getElementById('first-run')?.toggleAttribute('hidden', Boolean(existing));
+  // The viewer note is only true for somebody who is NOT running terminals, so
+  // it goes once a server is configured.
+  document.getElementById('viewer-note')?.toggleAttribute('hidden', Boolean(existing));
   if (existing) {
     if (backendUrlEl) backendUrlEl.value = existing.terminalBase;
     setBackendStatus(`Currently using ${existing.terminalBase}`, 'ok');
   } else {
     if (backendUrlEl) backendUrlEl.value = '';
-    setBackendStatus('Not set yet — enter your terminal-server URL above and save.', 'error');
+    setBackendStatus('Not set — only needed if you want to run terminals of your own.', '');
   }
   const configured = Boolean(existing);
   const btn = document.getElementById('open-spawner-btn') as HTMLButtonElement | null;

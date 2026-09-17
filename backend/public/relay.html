@@ -287,12 +287,20 @@
                   '· accepting embeds from', ALLOWED_EMBED_ORIGINS.join(', '));
     });
 
-  // The toolbar icon opens this page as a panel. Its real purpose is activation:
-  // a second app's headless iframe is only reliably loaded on a cold board once
-  // the user has opened the app at least once.
+  // The toolbar icon opens the SPAWNER, not this page.
+  //
+  // This is the developer's app, so its icon should do the developer's job:
+  // create terminals. The spawner is served from this same origin, so its calls
+  // to /api/browse and /api/pty/start are same-origin — which is the whole
+  // reason it lives on this side of the line.
+  //
+  // Clicking it also serves as activation: a second app's headless iframe is
+  // only reliably loaded on a cold board once the user has opened the app at
+  // least once. Relay status stays reachable at relay.html, linked from the
+  // spawner.
   if (window.miro && window.miro.board) {
     miro.board.ui.on('icon:click', function () {
-      return miro.board.ui.openPanel({ url: 'relay.html' });
+      return miro.board.ui.openPanel({ url: 'spawner.html' });
     }).catch(function (e) { console.warn('[relay] icon handler:', e); });
   }
 })();

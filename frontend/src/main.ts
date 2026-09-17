@@ -27,21 +27,19 @@ initHostBridge();
  * The toolbar icon. Registered independently, so failing to register it cannot
  * take the bridge down with it — they have nothing to do with each other beyond
  * living in the same iframe.
+ *
+ * Always the public panel, never the spawner.
+ *
+ * It used to skip straight to the spawner whenever a backend URL was saved,
+ * which was convenient for the one person already set up and left everybody
+ * else with no way in: the panel is where this app explains itself, and a
+ * viewer who installs it has no backend and so would never have seen it. This
+ * app is the front door — what it is, what it shows you, how to set up
+ * developer mode. Creating terminals belongs to the relay app, which is the one
+ * a developer installs.
  */
 async function registerIcon(): Promise<void> {
   await miro.board.ui.on('icon:click', async () => {
-    // Straight to the spawner when this browser already knows where its
-    // terminal server is — that is the thing people click the icon to do. The
-    // settings panel is only the first-run stop, and the spawner has a way
-    // back to it.
-    if (getBackendConfig()?.terminalBase) {
-      try {
-        await openSpawnerPanel();
-        return;
-      } catch (error) {
-        console.warn('[Terminal] spawner would not open, falling back to settings:', error);
-      }
-    }
     await miro.board.ui.openPanel({ url: 'app.html' });
   });
 }
