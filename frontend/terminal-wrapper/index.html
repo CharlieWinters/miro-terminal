@@ -78,6 +78,21 @@
     .switch input { margin: 0; }
     .live-dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--bad); }
     .live-dot.on { background: var(--ok); }
+    /* Once there IS history, that is what the embed is for — so the message
+       collapses to one line and the output gets the rest of the space. The full
+       wording stays available as the strip's tooltip rather than being deleted. */
+    #strip { display: none; align-items: center; gap: .5rem; flex: 0 0 auto;
+             padding: .5rem .7rem; font-size: .78rem; color: var(--muted);
+             background: #131a22; border-bottom: 1px solid var(--border); }
+    #root.compact #strip { display: flex; }
+    #root.compact #content { padding: 0; gap: 0; justify-content: flex-start; }
+    #root.compact .card { display: none; }
+    #root.compact #history-wrap { flex: 1; min-height: 0; max-width: none; width: 100%;
+                                  display: flex; flex-direction: column; }
+    #root.compact #history-head { padding: .45rem .7rem .3rem; margin: 0; }
+    #root.compact #history { flex: 1; max-height: none; border: 0; border-radius: 0;
+                             background: transparent; }
+    #strip .grow { flex: 1; }
     #termframe { display: none; flex: 1; width: 100%; border: 0; min-height: 0; }
     #root.live #termframe { display: block; }
     #root.live #content { display: none; }
@@ -92,6 +107,12 @@
     </div>
     <iframe id="termframe" title="Terminal" allow="clipboard-read; clipboard-write"></iframe>
     <div id="content">
+    <div id="strip">
+      <span class="dot" id="strip-dot"></span>
+      <strong id="strip-title"></strong>
+      <span class="grow"></span>
+      <span id="strip-meta"></span>
+    </div>
     <div class="card" id="card">
       <div class="spinner" id="spinner"></div>
       <h1 id="title">Looking for the Miro Terminal app…</h1>
@@ -173,6 +194,7 @@
 
   function render(opts) {
     spinner.hidden = true;
+    rootEl.classList.remove('compact');
     title.innerHTML = (opts.dot ? '<span class="dot ' + opts.dot + '"></span>' : '') + opts.title;
     body.innerHTML = opts.body;
     devBtn.hidden = !opts.button;
@@ -275,6 +297,24 @@
     applyLive(lastState);
   });
 
+  /**
+   * One line instead of a card, used whenever there is history to show.
+   *
+   * The embed exists to show what the terminal did; a paragraph explaining the
+   * situation is worth reading once and then only takes room away from the
+   * thing being read. The long wording is kept as the tooltip rather than
+   * thrown away.
+   */
+  function renderCompact(opts) {
+    spinner.hidden = true;
+    rootEl.classList.add('compact');
+    var dot = document.getElementById('strip-dot');
+    dot.className = 'dot ' + (opts.dot || '');
+    document.getElementById('strip-title').textContent = opts.title;
+    document.getElementById('strip-meta').textContent = opts.meta || '';
+    document.getElementById('strip').title = opts.detail || '';
+  }
+
   function showError(msg) {
     errEl.hidden = false;
     errEl.textContent = msg;
@@ -285,6 +325,27 @@
       dot: 'bad',
       title: 'This embed is missing its id',
       body: 'Create the terminal from the Miro Terminal panel rather than pasting this URL onto a board by hand.'
+    });
+    return;
+  }
+
+  // Opened as its own tab rather than inside a board.
+  //
+  // Everything this page can say depends on there being an app iframe beside it
+  // to ask, and on a board to read — neither exists here. Without this check it
+  // would ping an empty frame tree, time out, and then claim the terminal is
+  // running on someone else's computer, which is both unhelpful and not the
+  // point: the page is simply in the wrong place. Worth answering immediately
+  // rather than after several seconds of pointless retrying.
+  if (window.parent === window) {
+    render({
+      dot: 'warn',
+      title: 'This page belongs on a Miro board',
+      body: 'It is the terminal widget for a session running on someone\'s machine, and on its ' +
+            'own it has nothing to show: the command history it displays is read from the ' +
+            'board, through the Miro Terminal app, and neither is here.' +
+            '<br><br>Open the board this terminal was created on to see it.',
+      meta: sessionName ? 'session: ' + sessionName : ''
     });
     return;
   }
@@ -364,18 +425,26 @@
     // served publicly that branch is true for everyone, and it was swallowing
     // this case and announcing a terminal on "null".
     if (!s.backendConfigured) {
-      render({
-        dot: s.history ? 'ok' : 'warn',
-        title: s.history ? 'Terminal on another machine' : 'Nothing written yet',
-        body: s.history
-          ? 'This terminal runs on a collaborator\'s computer. The output below is what it ' +
+      if (s.history) {
+        renderCompact({
+          dot: 'ok',
+          title: 'Runs on another machine',
+          meta: sessionName || '',
+          detail:
+            'This terminal runs on a collaborator\'s computer. The output below is what it ' +
             'last wrote, read from the board — no server of your own needed, and it stays ' +
-            'readable when their machine is off.<br><br>To run terminals of your own, start ' +
-            'the terminal server and save its address in the app panel.'
-          : 'This terminal runs on a collaborator\'s computer and has not written any ' +
-            'history to the board yet. It will appear here once it does.<br><br>To run ' +
-            'terminals of your own, start the terminal server and save its address in the ' +
-            'app panel.',
+            'readable when their machine is off. To run terminals of your own, start the ' +
+            'terminal server and save its address in the app panel.',
+        });
+        return;
+      }
+      render({
+        dot: 'warn',
+        title: 'Nothing written yet',
+        body: 'This terminal runs on a collaborator\'s computer and has not written any ' +
+              'history to the board yet. It will appear here once it does.<br><br>To run ' +
+              'terminals of your own, start the terminal server and save its address in the ' +
+              'app panel.',
         meta: sessionName ? 'session: ' + sessionName : ''
       });
       return;
