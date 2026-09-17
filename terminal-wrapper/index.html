@@ -61,10 +61,35 @@
       color: #c9d6e3;
     }
     #root.with-history { flex-direction: column; gap: 1rem; }
+    /* Live mode takes the whole embed: a thin bar with the switch, then the
+       terminal. The switch stays visible while live — if keystrokes are
+       crossing a public page, the person typing should be able to see the
+       thing that says so, and turn it off without hunting. */
+    #root.live { flex-direction: column; align-items: stretch; justify-content: flex-start;
+                 padding: 0; gap: 0; }
+    #livebar { display: none; align-items: center; gap: .6rem; padding: .4rem .6rem;
+               background: #111820; border-bottom: 1px solid var(--border); font-size: .75rem;
+               color: var(--muted); flex: 0 0 auto; }
+    #root.live #livebar { display: flex; }
+    #livebar .grow { flex: 1; }
+    .switch { display: inline-flex; align-items: center; gap: .4rem; cursor: pointer;
+              user-select: none; font-weight: 600; color: var(--text); }
+    .switch input { margin: 0; }
+    .live-dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--bad); }
+    .live-dot.on { background: var(--ok); }
+    #termframe { display: none; flex: 1; width: 100%; border: 0; min-height: 0; }
+    #root.live #termframe { display: block; }
+    #root.live .card, #root.live #history-wrap { display: none; }
   </style>
 </head>
 <body>
   <div id="root">
+    <div id="livebar">
+      <span class="live-dot" id="live-dot"></span>
+      <label class="switch"><input type="checkbox" id="live-toggle" /> Live</label>
+      <span class="grow" id="live-note"></span>
+    </div>
+    <iframe id="termframe" title="Terminal" allow="clipboard-read; clipboard-write"></iframe>
     <div class="card" id="card">
       <div class="spinner" id="spinner"></div>
       <h1 id="title">Looking for the Miro Terminal app…</h1>
@@ -178,6 +203,74 @@
     document.getElementById('root').classList.add('with-history');
   }
 
+  // -------------------------------------------------------------------------
+  // Live mode: this embed becomes a real interactive terminal.
+  //
+  // The terminal UI is loaded from THIS origin (it is published next to this
+  // page), so nothing here reaches localhost. It talks to a relay running on
+  // the developer's machine, over postMessage, and the relay owns the socket
+  // and the token.
+  //
+  // The preference is per-browser rather than per-board on purpose. Turning it
+  // on is a statement about what YOUR browser should try, and only a browser
+  // with the relay app running can get anywhere — so a collaborator flipping it
+  // simply sees it fail to connect, rather than changing anything for anyone
+  // else. It is also one less board write.
+  // -------------------------------------------------------------------------
+  var LIVE_KEY = 'miro-terminal:live:' + embedId;
+  var liveWanted = false;
+  try { liveWanted = localStorage.getItem(LIVE_KEY) === '1'; } catch (e) {}
+
+  var rootEl = document.getElementById('root');
+  var frameEl = document.getElementById('termframe');
+  var toggleEl = document.getElementById('live-toggle');
+  var dotEl = document.getElementById('live-dot');
+  var noteEl = document.getElementById('live-note');
+  var lastState = null;
+
+  function terminalUrl(state) {
+    var url = new URL('terminal.html', window.location.href);
+    url.searchParams.set('transport', 'relay');
+    url.searchParams.set('sid', params.get('sid') || '');
+    url.searchParams.set('embedId', embedId);
+    if (sessionName) url.searchParams.set('name', sessionName);
+    if (params.get('boardId')) url.searchParams.set('boardId', params.get('boardId'));
+    if (params.get('boardName')) url.searchParams.set('boardName', params.get('boardName'));
+    url.searchParams.set('appOrigins', appOrigins.join(','));
+    // Where to find the relay: it is served BY the terminal server, so the
+    // relay's origin is the backend's origin.
+    try {
+      url.searchParams.set('relayOrigins', new URL(state.terminalBase).origin);
+    } catch (e) {}
+    return url.toString();
+  }
+
+  function applyLive(state) {
+    var canGoLive = Boolean(state && state.terminalBase);
+    toggleEl.disabled = !canGoLive;
+    toggleEl.checked = liveWanted && canGoLive;
+
+    if (!liveWanted || !canGoLive) {
+      rootEl.classList.remove('live');
+      dotEl.classList.remove('on');
+      if (frameEl.src) frameEl.removeAttribute('src');
+      return;
+    }
+    rootEl.classList.add('live');
+    dotEl.classList.add('on');
+    noteEl.textContent = sessionName || '';
+    var next = terminalUrl(state);
+    // Only reload when the URL actually changes; a refresh of state should not
+    // restart a working terminal.
+    if (frameEl.src !== next) frameEl.src = next;
+  }
+
+  toggleEl.addEventListener('change', function () {
+    liveWanted = toggleEl.checked;
+    try { localStorage.setItem(LIVE_KEY, liveWanted ? '1' : '0'); } catch (e) {}
+    applyLive(lastState);
+  });
+
   function showError(msg) {
     errEl.hidden = false;
     errEl.textContent = msg;
@@ -229,7 +322,9 @@
 
   function applyState(s) {
     settled = true;
+    lastState = s;
     renderHistory(s.history);
+    applyLive(s);
     startRefresh();
 
     // The app is here and holds this exact session: this is the developer.
@@ -237,7 +332,8 @@
       render({
         dot: 'ok',
         title: 'Your terminal is running',
-        body: 'This session is live on <code>' + s.terminalBase + '</code>. Open it in a modal to type into it.',
+        body: 'This session is live on <code>' + s.terminalBase + '</code>. Open it in a modal, ' +
+              'or flip <strong>Live</strong> above to type into it right here on the board.',
         button: true,
         meta: sessionName ? 'session: ' + sessionName : ''
       });
