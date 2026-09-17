@@ -24,7 +24,7 @@
  * anything privileged.
  */
 
-import { getBackendConfig } from './backendConfig';
+import { getBackendConfig, canReachLoopback } from './backendConfig';
 import { METADATA_KEY, placeTerminalEmbed } from './terminalEmbed';
 import { WRAPPER_URL } from './backendConfig';
 
@@ -235,8 +235,13 @@ async function readConnectedContext(embed: EmbedWidget): Promise<ConnectedContex
 export interface BridgeState {
   hasApp: true;
   backendConfigured: boolean;
-  backendReachable: boolean;
-  hasThisSession: boolean;
+  /** Whether this iframe is even ABLE to look. False once the app is served
+   * publicly, because a public origin may not reach loopback at all. When this
+   * is false the two fields below are null, meaning unknown — which is a
+   * different thing from false and must not be rendered as if it were. */
+  canProbeBackend: boolean;
+  backendReachable: boolean | null;
+  hasThisSession: boolean | null;
   terminalBase: string | null;
   embedOnBoard: boolean;
   history: TerminalHistory | null;
@@ -250,11 +255,13 @@ export interface BridgeState {
  */
 async function collectState(embedId: string): Promise<BridgeState> {
   const backend = getBackendConfig();
+  const canProbe = canReachLoopback();
   const state: BridgeState = {
     hasApp: true,
     backendConfigured: Boolean(backend?.terminalBase),
-    backendReachable: false,
-    hasThisSession: false,
+    canProbeBackend: canProbe,
+    backendReachable: canProbe ? false : null,
+    hasThisSession: canProbe ? false : null,
     terminalBase: backend?.terminalBase ?? null,
     embedOnBoard: false,
     history: null,
@@ -276,6 +283,12 @@ async function collectState(embedId: string): Promise<BridgeState> {
   }
 
   if (!backend?.terminalBase) return state;
+
+  // Served publicly there is nothing to probe with. The modal and the relay are
+  // on the machine that owns the server, so they find out for themselves and
+  // report accurately; guessing from here would only produce a confident wrong
+  // answer.
+  if (!canProbe) return state;
 
   try {
     const health = await fetchWithTimeout(`${backend.terminalBase}/health`);

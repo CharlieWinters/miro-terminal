@@ -2,7 +2,7 @@
 
 import { initTerminalContextSync } from './terminalEmbed';
 import { initHostBridge, openSpawnerPanel } from './hostBridge';
-import { getBackendConfig } from './backendConfig';
+import { getBackendConfig, canReachLoopback } from './backendConfig';
 
 async function init(): Promise<void> {
   await miro.board.ui.on('icon:click', async () => {
@@ -21,10 +21,20 @@ async function init(): Promise<void> {
     await miro.board.ui.openPanel({ url: 'app.html' });
   });
 
-  // Resumes the connected-item context relay for every terminal embed
-  // already on the board — independent of whether the panel is open. See
-  // initTerminalContextSync's doc comment in terminalEmbed.ts.
-  initTerminalContextSync().catch(console.error);
+  // The HTTP context relay pushes board content to the terminal server over
+  // fetch, so it can only run when this iframe is itself on a loopback origin —
+  // i.e. the solo local-dev setup. Served publicly it would be a stream of
+  // blocked public-to-loopback requests, which is exactly what it was before
+  // this guard existed.
+  //
+  // Nothing is lost by skipping it: the terminal gets its board context by
+  // asking this iframe over postMessage instead (mt:ctx-request in
+  // hostBridge.ts), which needs no network at all.
+  if (canReachLoopback()) {
+    initTerminalContextSync().catch(console.error);
+  } else {
+    console.log('[Terminal] public origin — board context is served over postMessage, not HTTP');
+  }
 
   // Answers the public embed wrapper over postMessage: reports whether this
   // browser can reach the terminal server, and opens the developer modal on
