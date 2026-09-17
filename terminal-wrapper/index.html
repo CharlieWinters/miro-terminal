@@ -38,13 +38,11 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; margin-right: .45rem; }
     .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
-    button {
-      font: inherit; font-size: .9rem; font-weight: 600; width: 100%; margin-top: 1rem;
-      padding: .6rem 1rem; border-radius: 8px; cursor: pointer;
-      background: var(--accent); color: #fff; border: 0;
-    }
-    button:hover { filter: brightness(1.1); }
-    button:disabled { opacity: .55; cursor: default; }
+    /* No blanket `button` rule. There used to be one, sized for the full-width
+       button inside the card — and when that button was replaced by the bar
+       controls, its `width: 100%; margin-top: 1rem` stayed behind and stretched
+       both of them across the bar. The bar controls style themselves fully
+       below instead of inheriting a shape meant for something else. */
     .err { color: var(--bad); font-size: .85rem; margin-top: .6rem; }
     .meta { font-size: .78rem; color: #5c6b80; margin-top: .9rem; }
     /* History readout. Deliberately a plain <pre>, not an xterm: what is stored
@@ -72,21 +70,25 @@
                background: #111820; border-bottom: 1px solid var(--border); font-size: .75rem;
                color: var(--muted); flex: 0 0 auto; }
     #root.can-live #livebar, #root.live #livebar { display: flex; }
-    #livebar .grow { flex: 1; }
+    #livebar .grow { flex: 1 1 auto; min-width: 0; overflow: hidden;
+                     text-overflow: ellipsis; white-space: nowrap; }
     /* Two modes, one control. The embed either shows what the terminal did or
        IS the terminal; those are the only two things it can be, so a toggle
        says it better than a checkbox called "Live" did. Full screen is an
        action rather than a third mode, so it sits apart. */
-    .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px;
-           overflow: hidden; }
-    .seg button { font: inherit; font-size: .72rem; font-weight: 600; padding: .22rem .6rem;
-                  background: transparent; color: var(--muted); border: 0; cursor: pointer; }
+    .seg { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--border);
+           border-radius: 6px; overflow: hidden; }
+    .seg button { font: inherit; font-size: .72rem; font-weight: 600; line-height: 1.4;
+                  width: auto; margin: 0; padding: .22rem .6rem; border-radius: 0;
+                  background: transparent; color: var(--muted); border: 0; cursor: pointer;
+                  white-space: nowrap; }
     .seg button + button { border-left: 1px solid var(--border); }
     .seg button:hover:not(.on) { color: var(--text); }
     .seg button.on { background: var(--accent); color: #fff; }
     .seg button.on.livemode { background: var(--ok); }
     .seg button:disabled { opacity: .4; cursor: default; }
-    .iconbtn { font: inherit; font-size: .72rem; padding: .22rem .5rem; cursor: pointer;
+    .iconbtn { font: inherit; font-size: .72rem; line-height: 1.4; width: auto; margin: 0;
+               flex: 0 0 auto; padding: .22rem .55rem; cursor: pointer; white-space: nowrap;
                background: transparent; color: var(--muted); border: 1px solid var(--border);
                border-radius: 6px; }
     .iconbtn:hover { color: var(--text); border-color: var(--accent); }
