@@ -15,7 +15,10 @@
       margin: 0; height: 100%; background: var(--bg); color: var(--text);
       font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     }
-    #root { height: 100%; display: flex; align-items: center; justify-content: center; padding: 1.5rem; }
+    #root { height: 100%; display: flex; flex-direction: column; }
+    #content { flex: 1; min-height: 0; display: flex; flex-direction: column;
+               align-items: center; justify-content: center; gap: 1rem;
+               padding: 1.5rem; overflow: auto; }
     .card {
       max-width: 30rem; background: var(--card); border: 1px solid var(--border);
       border-radius: 12px; padding: 1.5rem 1.35rem; line-height: 1.55;
@@ -60,17 +63,15 @@
       font-size: .78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
       color: #c9d6e3;
     }
-    #root.with-history { flex-direction: column; gap: 1rem; }
-    /* Live mode takes the whole embed: a thin bar with the switch, then the
-       terminal. The switch stays visible while live — if keystrokes are
-       crossing a public page, the person typing should be able to see the
-       thing that says so, and turn it off without hunting. */
-    #root.live { flex-direction: column; align-items: stretch; justify-content: flex-start;
-                 padding: 0; gap: 0; }
+    /* The bar shows as soon as going live is POSSIBLE, not once it is on —
+       otherwise the only way to reach the switch would be to already have
+       flipped it. It then stays visible while live, so that if keystrokes are
+       crossing a public page the person typing can see the thing saying so and
+       turn it off without hunting. */
     #livebar { display: none; align-items: center; gap: .6rem; padding: .4rem .6rem;
                background: #111820; border-bottom: 1px solid var(--border); font-size: .75rem;
                color: var(--muted); flex: 0 0 auto; }
-    #root.live #livebar { display: flex; }
+    #root.can-live #livebar, #root.live #livebar { display: flex; }
     #livebar .grow { flex: 1; }
     .switch { display: inline-flex; align-items: center; gap: .4rem; cursor: pointer;
               user-select: none; font-weight: 600; color: var(--text); }
@@ -79,7 +80,7 @@
     .live-dot.on { background: var(--ok); }
     #termframe { display: none; flex: 1; width: 100%; border: 0; min-height: 0; }
     #root.live #termframe { display: block; }
-    #root.live .card, #root.live #history-wrap { display: none; }
+    #root.live #content { display: none; }
   </style>
 </head>
 <body>
@@ -90,6 +91,7 @@
       <span class="grow" id="live-note"></span>
     </div>
     <iframe id="termframe" title="Terminal" allow="clipboard-read; clipboard-write"></iframe>
+    <div id="content">
     <div class="card" id="card">
       <div class="spinner" id="spinner"></div>
       <h1 id="title">Looking for the Miro Terminal app…</h1>
@@ -104,6 +106,7 @@
         <span id="history-when"></span>
       </div>
       <pre id="history"></pre>
+    </div>
     </div>
   </div>
 
@@ -247,6 +250,7 @@
 
   function applyLive(state) {
     var canGoLive = Boolean(state && state.terminalBase);
+    rootEl.classList.toggle('can-live', canGoLive);
     toggleEl.disabled = !canGoLive;
     toggleEl.checked = liveWanted && canGoLive;
 
@@ -305,15 +309,26 @@
   var appWindow = null;
   var appOrigin = null;
 
+  // Discovery goes out with a wildcard target origin, and every REPLY is
+  // checked against the allowlist below.
+  //
+  // The alternative — posting with an exact target origin to every frame — makes
+  // the browser log an error for each frame whose origin does not match, and a
+  // board with several apps installed produces hundreds of them, burying
+  // anything real. A wildcard never mismatches.
+  //
+  // It is safe here because of the asymmetry: the outbound message carries
+  // nothing secret (a type and this embed's own id, which is already board
+  // content), and a hostile frame that receives it cannot do anything with a
+  // reply, because replies are rejected unless they come from an allowlisted
+  // origin. Ask loudly, listen selectively.
   function post(message) {
     if (appWindow && appOrigin) {
       try { appWindow.postMessage(message, appOrigin); } catch (e) {}
       return;
     }
     frames.forEach(function (win) {
-      appOrigins.forEach(function (origin) {
-        try { win.postMessage(message, origin); } catch (e) {}
-      });
+      try { win.postMessage(message, '*'); } catch (e) {}
     });
   }
 

@@ -207,10 +207,12 @@
     })(function () {
       try { window.top.length; return window.top; } catch (e) { return window.parent; }
     }(), 0);
+    // Wildcard, for the same reason as everywhere else in this system: an exact
+    // target origin logs an error per non-matching frame. This announcement
+    // carries nothing but a type and this relay's own origin, and every inbound
+    // message is still origin-checked before anything happens.
     targets.forEach(function (win) {
-      ALLOWED_EMBED_ORIGINS.forEach(function (o) {
-        try { win.postMessage({ type: M.hello, v: 1, relayOrigin: location.origin }, o); } catch (e) {}
-      });
+      try { win.postMessage({ type: M.hello, v: 1, relayOrigin: location.origin }, '*'); } catch (e) {}
     });
   }
 
