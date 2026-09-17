@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Miro Terminal — relay</title>
+<script src="https://miro.com/app/static/sdk/v2/miro.js"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         margin: 0; padding: 16px; font-size: 13px; color: #222; }
+  h3 { margin: 0 0 6px; font-size: 14px; }
+  p { margin: 0 0 10px; font-size: 12px; color: #666; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: #666; font-weight: 600; border-bottom: 1px solid #e0e0e0; padding: 0 6px 4px 0; }
+  td { padding: 4px 6px 4px 0; border-bottom: 1px solid #f0f0f0;
+       font-family: ui-monospace, Menlo, monospace; }
+  .ok { color: #0a7d3d; } .bad { color: #c0392b; }
+</style>
+</head>
+<body>
+  <h3>Terminal relay</h3>
+  <p>
+    Running on your machine. Board embeds cannot reach a local terminal server, so this holds the
+    connections on their behalf and forwards bytes both ways. Nothing to configure; leave it alone.
+  </p>
+  <table>
+    <thead><tr><th>Session</th><th>State</th><th>Frames out</th><th>Frames in</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="4" style="color:#888">no live sessions</td></tr></tbody>
+  </table>
+
+<script>
+(function () {
+  // ---------------------------------------------------------------------------
+  // The relay exists because of one asymmetry: a board embed is a public page
+  // and may never reach localhost, while this page is served BY the terminal
+  // server and therefore may. So embeds hand their PTY envelopes here and this
+  // page puts them on a real websocket.
+  //
+  // Being same-origin with the server also means it can mint tokens. That is
+  // deliberate: the URL token expires, a public page cannot refresh it, and a
+  // PTY token has no business on a public page in the first place. Embeds never
+  // see one.
+  //
+  // This page is a Miro app's sdkUri, so its iframe is loaded with the board and
+  // stays for the session — which is the whole reason the relay lives here
+  // rather than in a panel somebody has to keep open.
+  // ---------------------------------------------------------------------------
+  var ALLOWED_EMBED_ORIGINS = [
+    'https://charliewinters.github.io',
+    'http://localhost:5173',
+    'https://localhost:5173',
+    'http://localhost:4173'
+  ];
+  var M = {
+    open: 'mt-relay:open',
+    ready: 'mt-relay:ready',
+    frame: 'mt-relay:frame',
+    closed: 'mt-relay:closed',
+    hello: 'mt-relay:hello'
+  };
+
+  // sid -> { ws, nonce, embedId, out, in, state, source, origin }
+  var sessions = {};
+
+  function render() {
+    var tb = document.getElementById('rows');
+    var keys = Object.keys(sessions);
+    if (!keys.length) {
+      tb.innerHTML = '<tr><td colspan="4" style="color:#888">no live sessions</td></tr>';
+      return;
+    }
+    tb.innerHTML = '';
+    keys.forEach(function (sid) {
+      var s = sessions[sid];
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>' + sid.slice(0, 10) + '…</td>' +
+        '<td class="' + (s.state === 'open' ? 'ok' : 'bad') + '">' + s.state + '</td>' +
+        '<td>' + s.out + '</td><td>' + s.inbound + '</td>';
+      tb.appendChild(tr);
+    });
+  }
+
+  function post(source, origin, message) {
+    try {
+      source.postMessage(message, origin);
+    } catch (e) {
+      /* frame went away — expected, embeds get reloaded constantly */
+    }
+  }
+
+  /**
+   * Opens (or reopens) a session for an embed.
+   *
+   * Always mints a fresh token and a fresh socket rather than reusing one. Embeds
+   * are reloaded constantly — Miro and Chrome both reset offscreen app iframes —
+   * so "reconnect from scratch" is the normal path, not the exceptional one. The
+   * PTY survives on the server and replays its scrollback on connect, so a
+   * reconnecting embed gets a correct screen rather than a partial one.
+   */
+  async function openSession(sid, embedId, cwd, source, origin) {
+    var existing = sessions[sid];
+    if (existing && existing.ws) {
+      try { existing.ws.close(); } catch (e) {}
+    }
+
+    var body = { sid: sid };
+    if (cwd) body.cwd = cwd;
+    var res = await fetch('/api/pty/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error('terminal server refused: ' + res.status);
+    var session = await res.json();
+
+    // A nonce, not the token, is what the embed gets — and it is handed over by
+    // postMessage rather than through any URL, so it never touches board
+    // content. Re-issued on every open, since embeds reload.
+    var nonce = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
+    var ws = new WebSocket(session.wsUrl);
+
+    var entry = {
+      ws: ws, nonce: nonce, embedId: embedId, out: 0, inbound: 0,
+      state: 'connecting', source: source, origin: origin
+    };
+    sessions[sid] = entry;
+    render();
+
+    ws.onopen = function () {
+      entry.state = 'open';
+      render();
+      post(source, origin, { type: M.ready, v: 1, embedId: embedId, sid: sid, nonce: nonce });
+    };
+    ws.onmessage = function (event) {
+      var envelope = null;
+      try { envelope = JSON.parse(event.data); } catch (e) { return; }
+      entry.inbound++;
+      if (entry.inbound % 25 === 0) render();
+      post(source, origin, { type: M.frame, v: 1, embedId: embedId, sid: sid, envelope: envelope });
+    };
+    ws.onclose = function () {
+      entry.state = 'closed';
+      render();
+      post(source, origin, { type: M.closed, v: 1, embedId: embedId, sid: sid });
+    };
+    ws.onerror = function () {
+      entry.state = 'error';
+      render();
+    };
+  }
+
+  window.addEventListener('message', function (event) {
+    var d = event.data;
+    if (!d || typeof d !== 'object') return;
+    if (d.type !== M.open && d.type !== M.frame && d.type !== M.hello) return;
+    // An opaque-origin (sandboxed) embed arrives as "null" and is allowed
+    // through; the nonce below is what actually authorises anything privileged.
+    if (event.origin !== 'null' && ALLOWED_EMBED_ORIGINS.indexOf(event.origin) === -1) {
+      console.warn('[relay] ignoring message from', event.origin);
+      return;
+    }
+
+    if (d.type === M.hello) {
+      post(event.source, event.origin === 'null' ? '*' : event.origin,
+           { type: M.hello, v: 1, relayOrigin: location.origin });
+      return;
+    }
+
+    if (d.type === M.open) {
+      if (!d.sid) return;
+      openSession(d.sid, d.embedId || '', d.cwd, event.source,
+                  event.origin === 'null' ? '*' : event.origin)
+        .catch(function (err) {
+          post(event.source, event.origin === 'null' ? '*' : event.origin,
+               { type: M.closed, v: 1, embedId: d.embedId, sid: d.sid, error: err.message });
+        });
+      return;
+    }
+
+    // A frame on its way to the shell. This is the privileged direction — it is
+    // keystrokes — so it is gated on the nonce this relay issued for this
+    // session, which the embed can only have received by postMessage.
+    var entry = sessions[d.sid];
+    if (!entry || !entry.ws) return;
+    if (!d.nonce || d.nonce !== entry.nonce) {
+      console.warn('[relay] refusing a frame with a bad nonce for', d.sid);
+      return;
+    }
+    if (entry.ws.readyState !== WebSocket.OPEN) return;
+    entry.ws.send(JSON.stringify(d.envelope));
+    entry.out++;
+    if (entry.out % 25 === 0) render();
+  });
+
+  // Announce to every frame on the page, so an embed that loaded before this
+  // iframe did stops waiting. Embeds also retry, which is the path that has to
+  // work — an exact target origin can never match a sandboxed embed's "null".
+  function announce() {
+    var targets = [];
+    (function collect(win, depth) {
+      if (depth > 8 || targets.length > 200) return;
+      if (win !== window) targets.push(win);
+      var n = 0;
+      try { n = win.length; } catch (e) { return; }
+      for (var i = 0; i < n; i++) { try { collect(win[i], depth + 1); } catch (e) {} }
+    })(function () {
+      try { window.top.length; return window.top; } catch (e) { return window.parent; }
+    }(), 0);
+    targets.forEach(function (win) {
+      ALLOWED_EMBED_ORIGINS.forEach(function (o) {
+        try { win.postMessage({ type: M.hello, v: 1, relayOrigin: location.origin }, o); } catch (e) {}
+      });
+    });
+  }
+
+  announce();
+  console.log('[relay] listening at', location.origin);
+
+  // The toolbar icon opens this page as a panel. Its real purpose is activation:
+  // a second app's headless iframe is only reliably loaded on a cold board once
+  // the user has opened the app at least once.
+  if (window.miro && window.miro.board) {
+    miro.board.ui.on('icon:click', function () {
+      return miro.board.ui.openPanel({ url: 'relay.html' });
+    }).catch(function (e) { console.warn('[relay] icon handler:', e); });
+  }
+})();
+</script>
+</body>
+</html>

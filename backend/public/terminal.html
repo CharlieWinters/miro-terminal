@@ -456,8 +456,10 @@
     }
 
     async function initTerminal() {
-      // Flow 1: If cwd provided but no sid, create new session
-      if (cwd && !sid) {
+      // Flow 1: If cwd provided but no sid, create new session.
+      // Same-origin only — an embed is handed an existing sid by the board, and
+      // creating sessions is the spawner's job, not the terminal's.
+      if (cwd && !sid && sameOriginApi) {
         try {
           setStatus('connecting', 'Creating session...');
           const response = await fetch('/api/pty/start', {
@@ -495,7 +497,15 @@
     async function startSession(sessionId) {
       try {
         setStatus('connecting', 'Connecting to session...');
-        
+
+        // In relay mode there is no token to fetch and no /api to fetch it from.
+        // The relay mints one on the machine that owns the session, which is
+        // both the only place that can and the only place it belongs.
+        if (TRANSPORT_MODE === 'relay') {
+          connectToSession(sessionId, null);
+          return;
+        }
+
         // Build request body with optional cwd
         const requestBody = { sid: sessionId };
         if (currentSettings.cwd) {
@@ -577,6 +587,140 @@
           if (!ws) return;
           ws.close();
           ws = null;
+        },
+      };
+    }
+
+    /**
+     * The other implementation: envelopes by postMessage, to a relay running on
+     * the developer's machine.
+     *
+     * Used when this page is served publicly as a board embed, where opening a
+     * socket to localhost is categorically forbidden. The relay is same-origin
+     * with the terminal server, so it mints the token and owns the socket; this
+     * page never handles either. What it gets instead is a nonce, delivered by
+     * postMessage and never through any URL, which authorises the one privileged
+     * direction — frames carrying keystrokes.
+     *
+     * Presents exactly the same interface as the websocket transport, so nothing
+     * downstream can tell which one it is talking to.
+     */
+    function createRelayTransport(sessionId, handlers) {
+      var relayOrigins = (params.get('relayOrigins') || '')
+        .split(',').map(function (o) { return o.trim(); }).filter(Boolean);
+      var nonce = null;
+      var relayWindow = null;
+      var relayOrigin = null;
+      var open = false;
+      var retry = null;
+      var attempts = 0;
+      var MAX_ATTEMPTS = 20;
+
+      function targets() {
+        var out = [];
+        (function collect(win, depth) {
+          if (depth > 8 || out.length > 200) return;
+          if (win !== window) out.push(win);
+          var n = 0;
+          try { n = win.length; } catch (e) { return; }
+          for (var i = 0; i < n; i++) { try { collect(win[i], depth + 1); } catch (e) {} }
+        })(function () {
+          try { window.top.length; return window.top; } catch (e) { return window.parent; }
+        }(), 0);
+        return out;
+      }
+
+      function post(message) {
+        if (relayWindow && relayOrigin) {
+          try { relayWindow.postMessage(message, relayOrigin); } catch (e) {}
+          return;
+        }
+        targets().forEach(function (win) {
+          relayOrigins.forEach(function (o) {
+            try { win.postMessage(message, o); } catch (e) {}
+          });
+        });
+      }
+
+      function onMessage(event) {
+        if (relayOrigins.indexOf(event.origin) === -1) return;
+        var d = event.data;
+        if (!d || typeof d !== 'object') return;
+        if (d.sid && d.sid !== sessionId) return;
+
+        if (d.type === 'mt-relay:hello') {
+          // Relay came up after us; ask again straight away.
+          relayWindow = event.source; relayOrigin = event.origin;
+          if (!open) requestOpen();
+          return;
+        }
+        if (d.type === 'mt-relay:ready') {
+          relayWindow = event.source; relayOrigin = event.origin;
+          nonce = d.nonce;
+          open = true;
+          if (retry) { clearInterval(retry); retry = null; }
+          handlers.onOpen();
+          return;
+        }
+        if (d.type === 'mt-relay:frame') {
+          handlers.onEnvelope(d.envelope);
+          return;
+        }
+        if (d.type === 'mt-relay:closed') {
+          open = false;
+          nonce = null;
+          handlers.onClose({ reason: d.error || 'relay closed the session' });
+          return;
+        }
+      }
+
+      function requestOpen() {
+        post({
+          type: 'mt-relay:open',
+          v: 1,
+          sid: sessionId,
+          embedId: embedId,
+          cwd: currentSettings && currentSettings.cwd ? currentSettings.cwd : undefined,
+        });
+      }
+
+      return {
+        kind: 'relay',
+        connect() {
+          window.addEventListener('message', onMessage);
+          if (!relayOrigins.length) {
+            handlers.onError(new Error('no relayOrigins given, so there is nothing to ask'));
+            return;
+          }
+          attempts = 0;
+          requestOpen();
+          attempts++;
+          // Retries cover the relay iframe loading after this one. Giving up is a
+          // real state: the developer has not installed or activated the relay
+          // app, and the embed should say so rather than spin.
+          retry = setInterval(function () {
+            if (open || attempts >= MAX_ATTEMPTS) {
+              clearInterval(retry); retry = null;
+              if (!open) handlers.onClose({ reason: 'the terminal relay did not answer' });
+              return;
+            }
+            requestOpen();
+            attempts++;
+          }, 600);
+        },
+        send(envelope) {
+          if (!open || !nonce) return false;
+          post({ type: 'mt-relay:frame', v: 1, sid: sessionId, embedId: embedId, nonce: nonce, envelope: envelope });
+          return true;
+        },
+        isOpen() {
+          return open;
+        },
+        close() {
+          open = false;
+          nonce = null;
+          if (retry) { clearInterval(retry); retry = null; }
+          window.removeEventListener('message', onMessage);
         },
       };
     }
@@ -708,7 +852,10 @@
       };
 
       function connect() {
-        transport = createWebSocketTransport(wsUrl, transportHandlers);
+        transport =
+          TRANSPORT_MODE === 'relay'
+            ? createRelayTransport(sessionId, transportHandlers)
+            : createWebSocketTransport(wsUrl, transportHandlers);
         currentTransport = transport;
         transport.connect();
       }
