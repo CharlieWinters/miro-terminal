@@ -279,8 +279,25 @@ export async function initTerminalContextSync(): Promise<void> {
   startContextRefresh();
 }
 
+/**
+ * The embed's own id, which ends up in its URL and therefore in board content.
+ *
+ * crypto.randomUUID rather than Date.now plus Math.random. Math.random is not a
+ * CSPRNG and the timestamp half is guessable outright, so the old id was
+ * predictable to anyone who knew roughly when a terminal was created. It no
+ * longer gates anything on its own — keystrokes are authorised by a nonce the
+ * relay issues, and PTY tokens never reach a public page — but an identifier
+ * that travels in shared board content should not be guessable, and there is no
+ * reason to accept a weak one when a strong one is a function call away.
+ */
 function generateEmbedId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).substr(2, 9)}`;
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Secure contexts always have randomUUID; this is for the impossible case.
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export interface TerminalEmbedOptions {

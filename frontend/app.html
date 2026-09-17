@@ -35,6 +35,23 @@
   </style>
 </head>
 <body>
+  <section id="first-run" hidden>
+    <h3>Two things to set up</h3>
+    <ol>
+      <li><strong>Run the terminal server</strong> on your machine, over HTTPS with a trusted
+        certificate, then save its URL below. An untrusted certificate fails silently — a
+        warning cannot be shown inside a board.</li>
+      <li><strong>Install the relay app too</strong>, if you want to type into terminals on the
+        board rather than in a modal. It is a second Miro app, served from your own machine,
+        and it has to be opened once before it loads reliably.</li>
+    </ol>
+    <p>Nobody else needs either. Collaborators who install just this app can read a terminal's
+      command history from the board — that is all installing it does.</p>
+    <p><a href="https://github.com/CharlieWinters/miro-terminal#setup" target="_blank"
+          rel="noreferrer">Full setup instructions</a></p>
+    <hr />
+  </section>
+
   <section id="backend-settings-section">
     <h3>Backend</h3>
     <p>URL of the terminal-server running on <strong>your</strong> machine. Stored only in this browser — every collaborator sets their own.</p>
@@ -54,6 +71,11 @@
     Opens the spawner, which is served by the terminal server on your machine — that is what lets
     it browse your folders and start a session. This panel cannot: it runs on the app's origin,
     and a public page is not allowed to reach localhost.
+  </p>
+  <p>
+    Once a terminal is on the board: connect a card or sticky to it with a connector, then type
+    <code>[INPUT]</code> in the terminal to pull in its text. Caption the connector to address
+    that item by name instead.
   </p>
   <button type="button" id="open-spawner-btn">New terminal…</button>
   <p id="spawn-status"></p>

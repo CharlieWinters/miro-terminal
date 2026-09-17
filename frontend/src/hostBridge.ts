@@ -24,18 +24,26 @@
  * anything privileged.
  */
 
-import { getBackendConfig, canReachLoopback } from './backendConfig';
+import { getBackendConfig, canReachLoopback, WRAPPER_URL } from './backendConfig';
 import { METADATA_KEY, placeTerminalEmbed } from './terminalEmbed';
-import { WRAPPER_URL } from './backendConfig';
 
-/** Origins allowed to talk to this bridge. The embed is the Pages one; the
- * localhost entries are for running the wrapper from a dev server. */
-const ALLOWED_EMBED_ORIGINS = [
-  'https://charliewinters.github.io',
-  'http://localhost:5173',
-  'https://localhost:5173',
-  'http://localhost:4173',
-];
+
+/**
+ * Origins allowed to talk to this bridge.
+ *
+ * The wrapper's origin is taken from WRAPPER_URL, which is itself derived from
+ * where this app is served — so a fork needs no edit here. The localhost
+ * entries cover running the wrapper from a dev server.
+ */
+const ALLOWED_EMBED_ORIGINS = Array.from(
+  new Set([
+    new URL(WRAPPER_URL).origin,
+    window.location.origin,
+    'http://localhost:5173',
+    'https://localhost:5173',
+    'http://localhost:4173',
+  ])
+);
 
 /** The modal is served BY the terminal server, so its origin is whatever the
  * user configured as the backend. Added dynamically rather than hardcoded,

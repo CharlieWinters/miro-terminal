@@ -1,189 +1,216 @@
 # Miro Terminal
 
-A persistent terminal, embedded on a Miro board.
+A real terminal, live on a Miro board. Several at once if you like — each its
+own shell, sized to its own widget.
 
-**The app is hosted publicly (GitHub Pages) and anyone on a board can install
-it.** Doing so is what lets a collaborator read a terminal's recent command
-history — that history lives in the embed's board metadata, and metadata is
-scoped per item *per app*, so only an iframe of this app can see it. Installing
-the app does not let anyone run anything: it has no way to reach your machine.
+Everyone on the board sees each terminal's recent command history, read from
+the board itself. Only the person whose machine is running it can type into it.
+That asymmetry is not a policy the app enforces; it is a consequence of how
+browsers work, which is the most reliable kind.
 
-The surfaces that *do* need your terminal server are served **by** that server,
-from your own machine:
+![no screenshot yet](#)
 
-| Surface | Served from | Does |
+## The one thing to understand first
+
+A page served from the internet **may not** talk to `localhost`. Chrome's Local
+Network Access blocks it — `fetch`, WebSocket, even navigating an iframe — and
+a page nested inside another site's iframe can never be granted permission.
+
+Since a board embed is loaded by every viewer, it has to be served publicly,
+which means it can never reach your terminal server. And anything served from
+your machine, conversely, gets no working Miro SDK: the SDK loads but never
+completes its handshake from an origin the app is not registered at.
+
+So every surface here sits on exactly one side of that line, and they talk to
+each other with `postMessage` — which is not a network request, so none of the
+above applies to it.
+
+| Surface | Served from | Can do | Cannot do |
+| --- | --- | --- | --- |
+| Headless iframe + settings panel | public host | board reads and writes | reach your machine |
+| `terminal-wrapper/` (the embed) | public host | show history, host a live terminal | reach your machine |
+| `spawner.html` | your machine | start sessions, browse folders | touch the board |
+| `terminal.html` (modal or live embed) | either | be a terminal | — |
+| `relay.html` | your machine | hold the PTY sockets | touch the board |
+
+Once that shape is clear, the rest of the repo reads straightforwardly. If you
+change it, `ARCHITECTURE.md` explains why each piece is where it is.
+
+## Requirements
+
+- Node 18+
+- A Miro **developer team** (any plan) — you install unpublished apps there
+- **HTTPS on the terminal server**, with a certificate your browser trusts.
+  [mkcert](https://github.com/FiloSottile/mkcert) is the easy route:
+  ```bash
+  mkcert -install
+  mkcert localhost 127.0.0.1 ::1
+  ```
+  This is not optional and the failure is silent: a certificate warning cannot
+  render inside a board modal, so an untrusted cert looks exactly like a server
+  that is not running.
+- Somewhere to publish static files. GitHub Pages works and is what the scripts
+  assume. (Pages cannot host a Miro app for the Marketplace, but it is fine for
+  a private or self-hosted one.)
+
+## Setup
+
+### 1. Run the terminal server
+
+```bash
+cd backend
+npm install
+cp /dev/null .env     # see the table below for what you may want in it
+npm start
+```
+
+Confirm it: `curl -k https://localhost:3001/health` should return
+`{"status":"ok",...}`. Note `http://localhost:3001` will refuse outright once
+TLS is on — always `https` for that port.
+
+### 2. Publish the frontend
+
+```bash
+cd frontend
+npm install
+npm run pages:publish
+```
+
+That builds the app, assembles everything Pages should serve into one
+directory, and pushes it to the `gh-pages` branch in a single commit. Your app
+then lives at `https://YOUR-USER.github.io/miro-terminal/app/index.html`.
+
+> Check the bundle hash actually changed before believing a publish. `gh-pages`
+> will happily report success having shipped nothing.
+
+### 3. Set up the two Miro apps
+
+**There are two, and live terminals need both.** This is the step people miss.
+
+| | App URL | Scopes | Who installs it |
+| --- | --- | --- | --- |
+| **Miro Terminal** | `https://YOUR-USER.github.io/miro-terminal/app/index.html` | `boards:read`, `boards:write`, `identity:read` | anyone who wants to see history |
+| **Miro Terminal relay** | `https://localhost:3001/relay.html?embedOrigins=https://YOUR-USER.github.io` | none | only you |
+
+Paste `app-manifest.yaml` and `app-manifest-relay.yaml` into the two apps
+respectively, replacing `YOUR-USER`. Install both on your developer team.
+
+Then **click the relay app's icon once**. A second app's headless iframe is only
+reliably loaded on a cold board load after the user has opened it at least
+once, so without that click live terminals work only sporadically.
+
+### 4. Point the app at your server
+
+Open a board, click the **Miro Terminal** icon, and save
+`https://localhost:3001` in the panel. It is stored in `localStorage` on the
+app's origin, so it is per-browser — which is deliberate, since every
+collaborator runs their own server — and it does not survive the app changing
+origin.
+
+## Using it
+
+**Create a terminal.** Click the app icon. With a server saved it opens the
+spawner, served from your own machine, which is what lets it browse your folders
+and start a session. Name it, pick a working directory, hit create.
+
+**Type into it.** Either flip **Live** at the top of the embed and type on the
+board, or open it in a full-screen modal. Live mode is per-browser and off by
+default — see [Security](#security) for why.
+
+**Pull board content into commands.** Connect a card, sticky or text item to the
+terminal embed with a connector, then use it as a variable:
+
+| You type | You get |
+| --- | --- |
+| `[INPUT]` | every uncaptioned connector's item, newline-joined |
+| `[LABEL]` | the item whose connector caption is `LABEL` |
+| `[LINK_1]` | that item's board link rather than its content |
+| `viewport`, `board_id`, `board_name` | board context |
+
+The label lives on the **connector's caption** — double-click the line to add
+one — never on the item, so an item's own text is never parsed or rewritten.
+Substitution recurses up to five passes, so a sticky whose text mentions
+another token resolves too.
+
+**What others see.** Anyone with the Miro Terminal app installed sees the last
+~50 lines the terminal wrote, plus who ran it and when, read from the embed's
+board metadata. It survives your machine being off. Anyone without the app is
+told what to install.
+
+## Security
+
+This app runs a shell. Read this bit.
+
+- **Do not expose the terminal server beyond `localhost`.** It has no
+  authentication of its own worth the name; its safety comes from being
+  unreachable. Binding it to a public interface hands anyone a shell.
+- **Keystrokes only ever travel between surfaces on your own machine**, unless
+  you turn on Live mode. Live mode routes them through the public embed page, so
+  it is off by default and per-browser, and the switch stays visible while it is
+  on. The relay authorises input with a nonce it issues over `postMessage`, never
+  through a URL, so nothing secret is ever written into board content.
+- **The relay only accepts session requests from origins you list** in its App
+  URL. The default is localhost only.
+- **Terminal history goes onto the board.** Anything on screen goes with it:
+  tokens a CLI echoes, `env` output, `git remote` URLs with credentials. It is
+  in app metadata, so only people with the app installed can read it — but that
+  is everyone you have shared the board with who bothers to install it.
+- Installing the app grants nobody any access to your machine. A public origin
+  cannot reach `localhost`, which is the constraint this whole design is built
+  around, doing useful duty as a boundary.
+
+## Configuration
+
+`backend/.env` — there is deliberately no `.env.example`, so that nothing here
+is ever copy-pasted with real values in it.
+
+| Var | Default | Notes |
 | --- | --- | --- |
-| headless + settings panel | GitHub Pages | reads and writes the board, opens the others |
-| `spawner.html` | your machine | starts sessions, browses your folders |
-| `terminal.html` | your machine | the terminal itself, opened as a modal |
-| `terminal-wrapper/` | GitHub Pages | what every board viewer sees in the embed |
+| `PORT` | `3001` | |
+| `SSL_KEY_PATH` / `SSL_CERT_PATH` | unset | Set both. See Requirements. |
+| `SIGN_SECRET` | dev-only fallback | **Required** once `NODE_ENV=production`. |
+| `SESSION_TIMEOUT` | `3600000` | Idle PTY cleanup, ms. |
+| `TOKEN_TTL` | `900000` | PTY token lifetime, ms. |
+| `SCROLLBACK_BYTES` | `204800` | Replayed to any client that connects, so a reopened embed shows recent history rather than a blank cursor. |
+| `ALLOWED_ROOT` | your home dir | `cwd` requests are confined here, path-traversal checked. |
+| `TRUST_PROXY` | unset | `1` if TLS terminates at a proxy in front. |
+| `CORS_ALLOWED_ORIGINS` | unset | Extra allowed origins, comma-separated. |
 
-They are opened with absolute `http(s)://localhost` URLs — both `openModal` and
-`openPanel` accept them — and they hand board work back to the app over
-`postMessage`. They have to: a Miro surface on a foreign origin loads the Web
-SDK but never completes its connection handshake, so board calls from there
-throw. Conversely nothing on the app's public origin can reach `localhost`;
-Chrome's Local Network Access blocks it, including iframe navigation. Board
-work on the app origin, terminal work on your machine, `postMessage` between —
-that split is the whole architecture, and it is not optional.
-
-## Prerequisites
-
-- **The terminal server must be HTTPS, with a trusted certificate.** Use
-  [mkcert](https://github.com/FiloSottile/mkcert) and install its CA. A cert
-  warning cannot show an interstitial inside a board modal — it just fails
-  silently, with nothing in the console to explain it.
-- Plain `http://localhost:3001` will refuse the connection outright once
-  `SSL_KEY_PATH`/`SSL_CERT_PATH` are set. Always `https` for that port.
-- Your backend URL is stored in `localStorage` on the **app's** origin. It does
-  not follow you across browsers, profiles, or an app that changes origin.
+Frontend: `VITE_WRAPPER_URL` if you host the app and the wrapper somewhere
+unrelated to each other. Otherwise the wrapper URL is derived from wherever the
+app is served, so a fork needs no edits.
 
 ## Layout
 
 ```
 miro-terminal/
-  frontend/            Miro Web SDK app (Vite + TS)
-    src/
-      main.ts          headless entry — icon:click → openPanel
-      panel.ts         panel UI — session name/cwd, "Create terminal"
-      terminalEmbed.ts  embed creation + connected-doc/viewport context relay
-      backendConfig.ts  per-person backend URL, stored in this browser's localStorage
-    terminal-wrapper/  the only publicly-hosted piece — State A/B fallback page (see below)
-  backend/             PTY server — YOU deploy this, on a machine YOU control
-    server.js          Express + node-pty + ws
-    public/
-      terminal.html     the actual terminal UI + [INPUT]/[LABEL]/<viewport>/etc. variable expansion
-      styles.css
-  app-manifest.yaml    paste into Miro's app settings once frontend/ is hosted
-```
-
-## Run the backend (everyone who wants their own terminal does this)
-
-```bash
-cd backend
-npm install
-```
-
-Create a `.env` file (never commit it) with whatever you need to change from
-these defaults:
-
-| Var | Default | Notes |
-| --- | --- | --- |
-| `PORT` | `3001` | |
-| `SSL_KEY_PATH` / `SSL_CERT_PATH` | unset (plain HTTP) | Set both for HTTPS — needed if the board is https and must reach you over wss. Use [mkcert](https://github.com/FiloSottile/mkcert) for local certs. |
-| `SIGN_SECRET` | dev-only fallback | **Required** once `NODE_ENV=production`. |
-| `SESSION_TIMEOUT` | `3600000` (1h) | Idle PTY session cleanup. |
-| `TOKEN_TTL` | `900000` (15m) | PTY start-token lifetime. |
-| `SCROLLBACK_BYTES` | `204800` (200 KB) | Per-session output buffer, replayed to any newly-connecting client so reopening the embed shows recent history instead of a blank cursor. |
-| `ALLOWED_ROOT` | your home dir | `cwd` requests are confined under this (path-traversal-checked). |
-| `TRUST_PROXY` | unset | Set to `1` if TLS terminates at a reverse proxy in front of this. |
-| `CORS_ALLOWED_ORIGINS` | unset | Extra allowed origins, comma-separated (localhost/127.0.0.1/miro.com/github.io are already allowed). |
-
-```bash
-npm start        # or: npm run dev (auto-restart)
-```
-
-Then open the Miro Terminal panel's **Backend** section, enter your
-`https://localhost:3001` (or wherever you're running it), and hit **Save** —
-this is stored per-browser (`localStorage`), not on the board, since every
-collaborator runs their own. **Clear** resets it if you need to point at a
-different backend later.
-
-## Run the frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-`app-manifest.yaml`'s `sdkUri`/`redirectUris` already point at
-`http://localhost:5173/` — Vite's default. This has to stay a `localhost`
-URL, not a hosted one; see the note at the top of this file and
-`ARCHITECTURE.md` for why.
-
-## Deploy your own backend, permanently
-
-The `backend/` server is a plain Node process — deploy it anywhere that gives
-you a long-running process (your own machine, a VM, a container host). It is
-**not** deployable to Cloudflare Workers: `node-pty` spawns real OS processes,
-which Workers' V8 isolates can't do. (Contrast with `fal-miro`, whose Hono
-backend deploys to either Node or Workers unchanged — that trick doesn't
-transfer here.)
-
-## The shared wrapper (State A/B) — deployed
-
-`frontend/terminal-wrapper/` is the **only** publicly-hosted piece of this
-app — a static page that decides, per-viewer, what to show for the embed
-widget every board visitor loads the same URL for:
-
-- **You're the host**: it navigates a nested iframe to your real
-  `terminal.html` and shows it once that page confirms it actually loaded
-  (a `postMessage` ping — see below).
-- **You're not**: nothing confirms within a few seconds, so it shows "a
-  collaborator started this session on their computer" instead of a broken
-  iframe.
-
-It's live at **https://charliewinters.github.io/miro-terminal/terminal-wrapper/**.
-`WRAPPER_URL` in `frontend/src/backendConfig.ts` already points at it.
-
-**Why it navigates instead of fetching a health-check endpoint** (which is
-what it used to do): a `fetch()` from this public page straight to your
-`localhost` backend is exactly the pattern Chrome's Private Network Access
-policy blocks — and did, live, when this app was briefly hosted publicly too
-(see `ARCHITECTURE.md`). Navigating a nested `<iframe>` isn't gated the same
-way, so detection instead relies on `terminal.html` itself `postMessage`-ing
-`{ type: 'miro-terminal:ready' }` to its parent as soon as it loads (before
-the PTY/WS connection even completes — this only needs to prove "a real
-backend served this page," not that everything downstream works). No message
-within `READY_TIMEOUT_MS` (4s) and the wrapper falls back to the "someone
-else's machine" message — which also naturally covers connection-refused,
-untrusted-cert interstitials, and anything else that isn't our own page,
-since none of those run this script at all.
-
-To redeploy after any change to `terminal-wrapper/index.html`:
-
-```bash
-cd frontend
-npm run pages:publish
+  frontend/
+    index.html            headless entry — answers embeds, opens surfaces
+    app.html              settings panel (the backend URL, and only that)
+    src/hostBridge.ts     the embed-to-app channel: state, history, board reads
+    src/terminalEmbed.ts  embed creation and the connector-variable reader
+    terminal-wrapper/     THE PUBLIC PAGE — what every viewer loads in an embed
+    scripts/stage-pages.mjs  assembles everything Pages serves, in one commit
+  backend/
+    server.js             Express + node-pty + ws
+    public/terminal.html  the terminal UI, served here AND published publicly
+    public/spawner.html   starts sessions, browses folders
+    public/relay.html     the second app: holds sockets for live embeds
+  app-manifest.yaml       app one
+  app-manifest-relay.yaml app two
+  ARCHITECTURE.md         why each piece is where it is
 ```
 
 ## Troubleshooting
 
-**`Error: posix_spawnp failed` when creating a terminal.** `node-pty`'s
-prebuilt `spawn-helper` binary (under
-`backend/node_modules/node-pty/prebuilds/<platform>-<arch>/`) has shipped
-without its executable bit set before — npm's pack/unpack can drop it, and
-`pty.spawn()` then fails at the OS level instead of giving a clear permission
-error. `backend`'s `postinstall` script (`scripts/fix-node-pty-permissions.js`)
-`chmod +x`'s it automatically after every `npm install`, so this should be
-self-healing. If you still hit it (e.g. you ran `npm install --ignore-scripts`,
-or restored `node_modules` from a cache/tarball that skipped scripts), fix it
-by hand:
+| Symptom | Cause |
+| --- | --- |
+| Embed says it runs on another machine, but it's yours | Dev server not running, or the app's origin changed and the saved backend URL was lost with it |
+| Live mode never connects | Relay app not installed, not yet opened once, or its `embedOrigins` does not list your Pages origin — the relay page states which origins it accepts |
+| Terminal opens but shows nothing | Certificate not trusted. A cert warning cannot render in a modal, so it fails silently |
+| `[INPUT]` and friends stop expanding | The embed URL lost its `embedId`, which is the key board context is looked up under |
+| A publish seems to have no effect | Check the bundle hash actually changed |
 
-```bash
-cd backend
-node scripts/fix-node-pty-permissions.js
-# or directly:
-chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
-```
+## Licence
 
-No server restart needed — the helper is exec'd fresh on every PTY spawn, not
-cached at startup.
-
-**`ERR_SSL_PROTOCOL_ERROR` fetching the backend.** You're using `https://` in
-the Backend settings but the server is running plain HTTP (no `SSL_KEY_PATH`/
-`SSL_CERT_PATH` set — see the env var table above). Either set those two vars
-and restart, or use `http://` for local-only testing (note the embed widget
-itself will still need `https://` once it's actually sitting inside the
-`https://` Miro board — mixed content gets blocked there).
-
-## Status
-
-See the kanban on the Miro plan board for current phase status. Short version:
-State A/B is built and **deployed**, using navigate+`postMessage` detection
-rather than a health-check fetch (see above — the fetch version hit a real
-Chrome Private Network Access block once tested against the public
-deployment); the connected-doc/variable-expansion context relay is built;
-State C (opt-in Cloudflare relay streaming, with optional history) is
-designed but not built.
+MIT — see [LICENSE](LICENSE).

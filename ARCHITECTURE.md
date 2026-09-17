@@ -1,103 +1,121 @@
 # Architecture — Miro Terminal
 
-Extracted from `miro-ide`'s `terminal-embed` + `terminal-server` + `terminal-wrapper`
-into its own repo, following `fal-miro`'s frontend/backend split — **with one
-deliberate departure**: the app frontend runs from your own machine, not a
-public host (see "Two iframes" below for why). Only `terminal-wrapper/` is
-publicly hosted. This file is the repo-local copy of the board's plan
-(https://miro.com/app/board/uXjVHw91nj0=/) — read that board for the full
-decision history; this is just the settled shape.
+Read the README first for what this is and how to run it. This file is about
+**why each piece is where it is**, because almost every structural decision here
+follows from one browser rule, and none of it looks reasonable without that.
 
-## Two iframes — both run from YOUR machine, not hosted
+## The rule everything follows from
 
-| Iframe   | Entry HTML     | Entry script       | Job |
-| -------- | -------------- | ------------------- | --- |
-| Headless | `index.html`   | `src/main.ts`        | Owns the Miro SDK, listens for `icon:click`, opens the panel. |
-| Panel    | `app.html`     | `src/panel.ts`       | Backend URL settings (save/clear, per-browser), session name / cwd fields, "Create terminal" button. |
+A page served from the internet may not talk to `localhost`. Chrome's Local
+Network Access gates `fetch`, `XHR`, WebSocket **and iframe navigation**, and
+the permission cannot be granted to a page nested inside another site's iframe,
+because the top-level page — Miro's, not ours — would have to delegate it.
 
-There's no modal and no `RUN_AGENT`-style cross-frame message bus — unlike
-fal-miro this app has exactly one job, so the panel calls `createTerminalEmbed`
-(`src/terminalEmbed.ts`) directly.
+That was established the hard way. An earlier version of this app tried to have
+a publicly served wrapper detect the host by navigating a nested iframe at
+`localhost` and waiting for a ping, on the theory that navigation was not gated
+the way `fetch` is. That was true of the older Private Network Access behaviour
+and is not true of LNA. The result was that the host got the same "runs on
+another machine" card as everybody else, with no way to tell the cases apart.
 
-**Unlike fal-miro, this frontend is not hosted publicly** — `sdkUri` in
-`app-manifest.yaml` points at `http://localhost:5173/`, wherever you run
-`npm run dev`. This was tried and reverted: every call these two iframes make
-(`/api/pty/start`, `/api/browse`, the context push) targets `localhost`, and
-briefly hosting them on GitHub Pages made every one of those calls a
-public-page-fetching-a-loopback-address request — which Chrome's **Private
-Network Access** policy blocks outright when the page is nested inside
-Miro's iframe (confirmed live: `Permission was denied for this request to
-access the 'loopback' address space`, even after correctly setting
-`Access-Control-Allow-Private-Network` server-side — PNA is a browser
-*permission* gate above CORS, not just a header check, and nested
-non-top-level iframes generally can't be granted permissions unless the
-top-level page — Miro's, here, not ours — explicitly delegates it via
-`Permissions-Policy`, which it doesn't). Confirmed the granted-permission
-doesn't carry over from a top-level tab into the nested iframe either.
-Keeping the app on `localhost` sidesteps the whole problem: `localhost`
-talking to `localhost` is loopback-to-loopback, never public-to-private, so
-PNA never enters into it — exactly how local dev worked throughout this
-project before any of this came up.
+There is a second, less obvious half. A Miro app surface served from an origin
+the app is **not registered at** loads `miro.js` and even exposes
+`window.miro.board` — but the SDK never completes its connection handshake, so
+every board call throws (`SdkConnectionError: SDK version fetching timeout`).
+Measured, not assumed; the object existing is not evidence the SDK works.
 
-### The embed — a third, Miro-SDK-free surface, and the one thing that IS public
+Put together: **a surface can reach your machine, or it can use the board, never
+both.**
 
-The widget created by `board.createEmbed` points at `terminal-wrapper/index.html`
-— a static page with **no Miro SDK and no backend of its own**, hosted on GitHub
-Pages. This is the **only** publicly-hosted piece of the whole app, and it has
-to be: every board viewer's browser loads the *same* embed URL regardless of
-whose machine is actually running the session, so it can't be a `localhost`
-address for anyone except the host. Same principle as fal-miro's `embed-*.html`
-pages otherwise — loads straight from wherever it's hosted, decides for itself
-what to show, no backend call of its own baked into the embed's identity.
+## Which is why there are five surfaces
 
-**The wrapper hits the exact same PNA wall for its own detection step** — it
-used to `fetch()` a `/health` endpoint, which is exactly the blocked pattern.
-The fix: it doesn't `fetch()` anything anymore. It unconditionally navigates a
-nested `<iframe>` to your real `terminal.html`, and detects success via a
-`postMessage` that page sends immediately on load (see `terminal.html`'s
-`miro-terminal:ready` ping) — navigation isn't gated by PNA the way
-`fetch`/`XHR`/`WebSocket` are, since it's not a script-initiated subresource
-request. A `setTimeout` (`READY_TIMEOUT_MS`, 4s) is the fallback: if the real
-page never confirms — because nothing's listening, because a self-signed cert
-shows a warning interstitial instead, whatever — none of those alternate
-outcomes ever run our script to send the ready ping, so the timeout alone
-correctly catches all of them without needing to know which one occurred.
+| Surface | Origin | Has the SDK | Can reach the PTY |
+| --- | --- | --- | --- |
+| Headless iframe (`index.html`) | public | yes | no |
+| Settings panel (`app.html`) | public | yes | no |
+| Embed wrapper (`terminal-wrapper/`) | public | no | no |
+| `spawner.html`, `relay.html` | your machine | relay only¹ | yes |
+| `terminal.html` | either² | no | in `ws` mode |
 
-## Why this backend can't be Hono/Workers like fal-miro's
+¹ The relay is served at its *own* app's registered origin, so its SDK does
+connect — though it never uses it for anything but the toolbar icon.
+² Served by the terminal server for the modal, and published publicly for live
+embeds. One file, two modes, chosen by a `transport` query parameter.
 
-fal-miro's backend is Hono specifically so the same code deploys to a plain Node
-host *or* Cloudflare Workers with only a different entrypoint. `backend/server.js`
-here uses `node-pty` to spawn a real OS process (your shell) — that cannot run in
-a Workers V8 isolate, full stop. So:
+They talk to each other with `postMessage`, which is not a network request and
+so is subject to none of the above. An earlier comment in `terminalEmbed.ts`
+claimed postMessage between these frames does not work, and an entire HTTP relay
+was built around that claim. It was wrong: no frame has a *reference* to any
+other, but `length` and indexed access are on the cross-origin property
+allowlist, so any frame can walk the tree from `window.top` and post to every
+frame it finds. Verified both same-origin and cross-origin.
 
-- The PTY backend (`backend/`) only ever deploys to a Node host or container
-  **you** control (your laptop, a VM, a container). It is never Workers-deployable.
-  There's no dual-entrypoint trick available here.
-- A Cloudflare Worker is still the right tool for the **opt-in streaming relay**
-  (state C below) — it's a thin WebSocket fan-out, not a PTY host.
+Discovery posts with a wildcard target origin and every **reply** is checked
+against an allowlist. The reverse — exact target origins on the way out — makes
+the browser log an error per non-matching frame, which on a board with several
+apps installed buried everything worth reading. Outbound discovery carries
+nothing secret, so the asymmetry costs nothing: ask loudly, listen selectively.
 
-## Three states for a viewer opening the terminal embed
+## The two things that cross a boundary
 
-**State A — nobody's terminal is reachable from your browser.** The wrapper
-navigates its nested iframe to `terminalBase` (restricted to
-`localhost`/`127.0.0.1`/`[::1]`) regardless, but no `miro-terminal:ready`
-`postMessage` ever arrives — nothing's listening, or a cert warning
-interstitial loads instead, or any number of other non-outcomes — so after
-`READY_TIMEOUT_MS` it shows: *"A collaborator started this session on their
-computer."* No fetch ever attempted, no broken iframe left visible.
+**Creating a terminal** needs a localhost call (`/api/pty/start`) and a board
+write (`createEmbed`). So `spawner.html` does the first and hands the started
+session to the headless iframe, which does the second.
 
-**State B — you are the host.** The navigated iframe really does load your
-`terminal.html` (you're on the same machine as the PTY server), which
-`postMessage`s `miro-terminal:ready` back immediately — the wrapper reveals
-the iframe and you get your own live terminal.
+**A live terminal in an embed** needs a socket to the PTY from a public page,
+which is impossible. So `relay.html` — a second Miro app, served from your
+machine, whose iframe is loaded with the board and stays for the session — holds
+the sockets and forwards envelopes by `postMessage`. It is a separate app
+because an app has one `sdkUri` and this one has to be local; it stores nothing,
+so nothing is lost by keeping it apart.
 
-**State C — opt-in streaming to everyone else (not built yet).** The host's
-local `backend/server.js` opens an outbound WebSocket to a small Cloudflare
-Worker relay; the Worker fans out **read-only** terminal output to any other
-viewer's embed. No input path back — matches "no control over the terminal."
-Opt-in is an **explicit toggle in the corner of the embed**, host-controlled,
-not always-on. Optional history: check Cloudflare's free tier (KV / D1 /
-Durable Objects) before reaching for a real database.
+Every PTY exchange was already a JSON envelope (`{type:'input'|'resize'}` out,
+`{type:'data'}` in), so this was a transport swap rather than a protocol change:
+one interface, two implementations, and the handlers cannot tell which they are
+on.
+
+## Tokens and nonces
+
+The PTY token expires (`TOKEN_TTL`) while a board URL does not, so nothing
+long-lived may carry one. It is not in the embed URL, not in the modal URL, and
+never reaches a public page. Both the modal and the relay mint their own, each
+on the machine that owns the session.
+
+Live mode authorises keystrokes with a nonce the relay issues over `postMessage`
+and re-issues on every reconnect. Deliberately never through a URL: an embed's
+URL is board content, readable by anyone with board access.
+
+## Designed for being reloaded
+
+Miro and Chrome both reset offscreen app iframes. So a reconnect is the normal
+path: every relay open mints a fresh token and a fresh socket rather than
+reusing one, the PTY replays its scrollback on connect so the screen comes back
+correct rather than partial, and nothing is keyed to a frame that may not
+outlive the request.
+
+## History on the board
+
+The terminal writes roughly its last 50 lines into the embed widget's app
+metadata, debounced. Chosen over a visible board item because metadata is
+invisible, is deleted with the item it belongs to, and does not land in every
+collaborator's undo stack — at the cost of being readable only by someone with
+the app installed.
+
+The snapshot comes from **xterm's own buffer**, not from the PTY stream. A first
+attempt stripped ANSI from the stream and rebuilt the text, which produces
+plausible nonsense: a terminal positions output with cursor-movement escapes, so
+once those are stripped the remainder concatenates in stream order rather than
+screen order. It looked populated, timestamped and correct, and was wrong.
+
+Metadata caps around 6 KB, which is about 100 lines of terminal text — measured,
+not guessed. `SCROLLBACK_BYTES` is 200 KB, about 3,200 lines, so the board holds
+a *readout* and the server keeps the buffer. See the board linked below for the
+sizing work behind a fuller archive, which is not built.
+
+## Boards
+
+- Decision history: https://miro.com/app/board/uXjVHqTcS-o=/
+- Build plan and phases: https://miro.com/app/board/uXjVHmMHqHk=/
 
 ## Backend (`backend/server.js`)
 
@@ -145,10 +163,21 @@ answer "what's in this folder" with something usable as a `cwd`. The panel
 the working-directory input on "Use this folder" — no new state, it's just
 filling in the same field you could type into directly.
 
-## Board content → terminal ("MCP" note on the board is a misnomer)
+## Board content → terminal
 
-The board sticky that called this "MCP" is **not** the Model Context Protocol.
-It's a bespoke HTTP push/poll relay, kept as-is:
+Not MCP, despite what an early board sticky called it. Board items connected to
+a terminal embed become variables you can type into it.
+
+**How it is read now:** the surface showing the terminal asks the app's headless
+iframe over `postMessage` (`mt:ctx-request`), and that iframe — which is the
+only one with a working SDK — reads the connectors and answers. No network call
+is involved.
+
+**The HTTP push/poll relay below is a fallback**, kept only for the solo
+local-dev flow where an embed points straight at `localhost` and no app iframe
+is listening. It cannot run from a public origin and refuses to try.
+
+The original mechanism, for reference:
 
 1. `terminalEmbed.ts` finds items connected to the embed via connectors
    (`getConnectedItems`), classifies each one (see the labelling rule below),

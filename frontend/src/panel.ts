@@ -26,6 +26,9 @@ function setBackendStatus(text: string, kind: 'ok' | 'error' | '' = ''): void {
 
 function refreshBackendStatus(): void {
   const existing = getBackendConfig();
+  // Shown only until a backend is saved. After that it is noise, and the panel
+  // is something you open to spawn a terminal rather than to read.
+  document.getElementById('first-run')?.toggleAttribute('hidden', Boolean(existing));
   if (existing) {
     if (backendUrlEl) backendUrlEl.value = existing.terminalBase;
     setBackendStatus(`Currently using ${existing.terminalBase}`, 'ok');

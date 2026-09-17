@@ -21,8 +21,9 @@
   <h3>Terminal relay</h3>
   <p>
     Running on your machine. Board embeds cannot reach a local terminal server, so this holds the
-    connections on their behalf and forwards bytes both ways. Nothing to configure; leave it alone.
+    connections on their behalf and forwards bytes both ways.
   </p>
+  <p id="origins"></p>
   <table>
     <thead><tr><th>Session</th><th>State</th><th>Frames out</th><th>Frames in</th></tr></thead>
     <tbody id="rows"><tr><td colspan="4" style="color:#888">no live sessions</td></tr></tbody>
@@ -45,12 +46,28 @@
   // stays for the session — which is the whole reason the relay lives here
   // rather than in a panel somebody has to keep open.
   // ---------------------------------------------------------------------------
-  var ALLOWED_EMBED_ORIGINS = [
-    'https://charliewinters.github.io',
-    'http://localhost:5173',
-    'https://localhost:5173',
-    'http://localhost:4173'
-  ];
+  // Which origins may ask this relay to open a session.
+  //
+  // This is the one value that cannot be derived: the relay is served from your
+  // machine and has no way to know where you published the embed. So it is set
+  // on the relay app's own App URL, which is where you configure the app
+  // anyway:
+  //
+  //   https://localhost:3001/relay.html?embedOrigins=https://you.github.io
+  //
+  // It matters because opening a session is what yields a nonce, and the nonce
+  // is what authorises keystrokes. Leaving it at the localhost default means
+  // published embeds simply cannot reach the relay — a closed door rather than
+  // an open one, which is the right way round for a default.
+  var ALLOWED_EMBED_ORIGINS = (function () {
+    var configured = (new URLSearchParams(location.search).get('embedOrigins') || '')
+      .split(',').map(function (o) { return o.trim(); }).filter(Boolean);
+    return configured.concat([
+      'http://localhost:5173',
+      'https://localhost:5173',
+      'http://localhost:4173'
+    ]);
+  })();
   var M = {
     open: 'mt-relay:open',
     ready: 'mt-relay:ready',
@@ -216,8 +233,16 @@
     });
   }
 
+  // Stated on screen because a relay that is running but does not trust your
+  // embed's origin looks identical to one that is not running at all.
+  var originsEl = document.getElementById('origins');
+  if (originsEl) {
+    originsEl.textContent = 'Accepting embeds from: ' + ALLOWED_EMBED_ORIGINS.join(', ');
+  }
+
   announce();
-  console.log('[relay] listening at', location.origin);
+  console.log('[relay] listening at', location.origin,
+              '· accepting embeds from', ALLOWED_EMBED_ORIGINS.join(', '));
 
   // The toolbar icon opens this page as a panel. Its real purpose is activation:
   // a second app's headless iframe is only reliably loaded on a cold board once

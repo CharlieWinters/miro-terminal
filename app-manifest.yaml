@@ -19,10 +19,15 @@
 #
 # Publish with `cd frontend && npm run pages:publish`.
 
+# THERE ARE TWO APPS. This is the first. Replace YOUR-USER below with your
+# GitHub user (or wherever you published the frontend), then create a second
+# app for the relay — see the README's "Set up the two Miro apps". Live
+# terminals in embeds do not work with only this one installed.
+
 appName: Miro Terminal
 sdkVersion: SDK_V2
 
-sdkUri: https://charliewinters.github.io/miro-terminal/app/index.html
+sdkUri: https://YOUR-USER.github.io/miro-terminal/app/index.html
 
 scopes:
   - boards:read
@@ -30,14 +35,13 @@ scopes:
   - identity:read
 
 redirectUris:
-  - https://charliewinters.github.io/miro-terminal/app/
+  - https://YOUR-USER.github.io/miro-terminal/app/
 
-# TODO: no icon has been designed yet — Miro's app settings form may require
-# one to save the manifest; a placeholder icon URL will just 404. Host a real
-# one (e.g. alongside the GitHub Pages wrapper) once designed.
-icons:
-  - src: https://charliewinters.github.io/miro-terminal/icon.svg
-    size: 24
+# No icon is shipped. Miro's settings form may require one to save the
+# manifest; a placeholder URL just 404s, so host a real file and uncomment.
+# icons:
+#   - src: https://YOUR-USER.github.io/miro-terminal/icon.svg
+#     size: 24
 
 # When the user clicks the app icon, the headless (sdkUri) iframe loads and
 # opens the spawner panel on the developer's own machine — or, on first run

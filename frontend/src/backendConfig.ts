@@ -59,9 +59,22 @@ export function clearBackendConfig(): void {
 }
 
 /**
- * Hosted wrapper page (see ../terminal-wrapper/) that health-checks this
- * person's terminalBase and either iframes the live terminal or shows an
- * informational fallback to everyone else on the board. Deployed via
- * `npm run pages:publish` — see README "Turn on the shared wrapper".
+ * The public wrapper page every board viewer loads inside a terminal embed.
+ *
+ * DERIVED rather than hardcoded, so a fork works without editing this file.
+ * The published layout puts the app at `<base>/app/index.html` and the wrapper
+ * at `<base>/terminal-wrapper/`; the dev server serves `/index.html` and
+ * `/terminal-wrapper/`. Both are reachable from wherever this page is, so the
+ * host name never has to be written down.
+ *
+ * Override with VITE_WRAPPER_URL if you host the two somewhere unrelated.
  */
-export const WRAPPER_URL = 'https://charliewinters.github.io/miro-terminal/terminal-wrapper/';
+function deriveWrapperUrl(): string {
+  const override = (import.meta as { env?: Record<string, string> }).env?.VITE_WRAPPER_URL;
+  if (override) return override.replace(/\/?$/, '/');
+  const here = new URL('.', window.location.href);
+  const base = here.pathname.endsWith('/app/') ? new URL('../', here) : here;
+  return new URL('terminal-wrapper/', base).toString();
+}
+
+export const WRAPPER_URL = deriveWrapperUrl();

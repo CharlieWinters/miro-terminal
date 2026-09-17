@@ -165,8 +165,13 @@
   // names the old one. Rather than have every existing terminal go dark on the
   // day the app is published, the known origins are always tried as well. The
   // cost of an extra candidate is one ignored postMessage.
+  // location.origin is the load-bearing one and needs no configuring: the app
+  // and this wrapper are published to the SAME origin, so wherever this page
+  // came from is where the app is too. That makes a fork work untouched.
+  // The localhost entries cover a dev server, and anything in the URL's
+  // appOrigins (stamped at embed creation) is added on top.
   var KNOWN_APP_ORIGINS = [
-    'https://charliewinters.github.io',
+    window.location.origin,
     'http://localhost:5173',
     'https://localhost:5173',
     'http://localhost:4173'

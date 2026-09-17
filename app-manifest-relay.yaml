@@ -1,0 +1,32 @@
+# Manifest for the SECOND app: the relay.
+#
+# Paste into a NEW Miro app, separate from Miro Terminal, at
+# https://miro.com/app/settings/user-profile/apps/
+#
+# WHY A SECOND APP. A board embed is a public page and may never reach
+# localhost — Chrome's Local Network Access forbids it. So something served
+# from your own machine has to hold the websockets on the embeds' behalf. An
+# app's sdkUri iframe is loaded with the board and stays for the session, which
+# makes it the only surface that is both local and always present. A panel would
+# do the job but would have to be kept open.
+#
+# It stores nothing and reads nothing from the board. It only relays bytes,
+# which is why it needs no scopes and why keeping it separate costs nothing.
+#
+# REPLACE the embedOrigins value with wherever you published the frontend.
+# The relay will not accept a session request from an origin it does not list,
+# and the default is localhost only — a closed door rather than an open one.
+# Without this, live terminals silently fail to connect.
+
+appName: Miro Terminal relay
+sdkVersion: SDK_V2
+
+sdkUri: https://localhost:3001/relay.html?embedOrigins=https://YOUR-USER.github.io
+
+# None. It never touches the board.
+scopes: []
+
+# After installing, click its toolbar icon once. A second app's headless iframe
+# is only reliably loaded on a cold board load after the user has opened it at
+# least once — so without that click, live terminals work only on the board
+# where you installed it, until you happen to open it.
