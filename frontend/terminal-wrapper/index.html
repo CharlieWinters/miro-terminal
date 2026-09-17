@@ -355,6 +355,32 @@
       return;
     }
 
+    // Somebody with the app but no terminal server of their own — which is most
+    // people looking at this board. They are a VIEWER, and the history above is
+    // the whole reason they installed anything, so say that rather than telling
+    // them they have failed to configure something they never wanted.
+    //
+    // This has to come before the can't-probe branch below: once the app is
+    // served publicly that branch is true for everyone, and it was swallowing
+    // this case and announcing a terminal on "null".
+    if (!s.backendConfigured) {
+      render({
+        dot: s.history ? 'ok' : 'warn',
+        title: s.history ? 'Terminal on another machine' : 'Nothing written yet',
+        body: s.history
+          ? 'This terminal runs on a collaborator\'s computer. The output below is what it ' +
+            'last wrote, read from the board — no server of your own needed, and it stays ' +
+            'readable when their machine is off.<br><br>To run terminals of your own, start ' +
+            'the terminal server and save its address in the app panel.'
+          : 'This terminal runs on a collaborator\'s computer and has not written any ' +
+            'history to the board yet. It will appear here once it does.<br><br>To run ' +
+            'terminals of your own, start the terminal server and save its address in the ' +
+            'app panel.',
+        meta: sessionName ? 'session: ' + sessionName : ''
+      });
+      return;
+    }
+
     // The app cannot see the server at all, because the app is served publicly
     // and a public origin may not reach loopback. That is NOT the same as the
     // server being down, and saying so would be a confident lie — the previous
@@ -403,12 +429,13 @@
       return;
     }
 
-    // App installed, but this browser has never been pointed at a server.
+    // Reaching here means a backend IS configured and reachable but something
+    // else is off; the branches above cover every case we can name.
     render({
       dot: 'warn',
-      title: 'No terminal server configured',
-      body: 'You have the Miro Terminal app, but this browser has no backend URL saved. ' +
-            'Open the app panel, enter the address of the terminal server on your machine, and hit Save.'
+      title: 'Terminal unavailable',
+      body: 'The app is configured for <code>' + s.terminalBase + '</code> but this session ' +
+            'could not be reached. Try the app panel, or create a new terminal.'
     });
   }
 
