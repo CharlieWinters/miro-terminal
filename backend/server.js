@@ -467,6 +467,26 @@ app.post('/api/context/:embedId/request', (req, res) => {
   res.json({ ok: true });
 });
 
+// Which origins may ask the relay to open a PTY session — i.e. where you
+// published the embed.
+//
+// This lives in .env rather than on the relay app's App URL because Miro
+// normalises sdkUri and drops query parameters from it: a configured
+// ?embedOrigins=... simply does not arrive, and the relay frame loads with only
+// Miro's own _miro and _sdk params. Confirmed by inspecting the frame.
+//
+// No default. Opening a session is what yields the nonce that authorises
+// keystrokes, so an unset value means live mode does not work — a closed door
+// rather than an open one. The relay says so, and names this variable.
+const EMBED_ORIGINS = (process.env.EMBED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
+app.get('/api/relay-config', (req, res) => {
+  res.json({ embedOrigins: EMBED_ORIGINS });
+});
+
 // Does this session exist on THIS machine? The wrapper cannot ask (it is a
 // public page and cannot reach loopback), so the app iframe asks on its behalf
 // and relays the answer over postMessage. This is what lets the embed tell

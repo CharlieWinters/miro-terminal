@@ -13,15 +13,23 @@
 # It stores nothing and reads nothing from the board. It only relays bytes,
 # which is why it needs no scopes and why keeping it separate costs nothing.
 #
-# REPLACE the embedOrigins value with wherever you published the frontend.
-# The relay will not accept a session request from an origin it does not list,
-# and the default is localhost only — a closed door rather than an open one.
-# Without this, live terminals silently fail to connect.
+# Nothing to replace in the URL below. Which origins the relay accepts is set
+# in backend/.env, NOT here:
+#
+#   EMBED_ORIGINS=https://YOUR-USER.github.io
+#
+# It has to live there because Miro normalises an app's sdkUri and drops query
+# parameters from it — a ?embedOrigins= on this line never arrives, and the
+# relay frame loads with only Miro's own _miro and _sdk params. Confirmed by
+# inspecting the frame.
+#
+# Without EMBED_ORIGINS set, live terminals cannot connect. The relay page says
+# so, and the embed shows the reason rather than timing out.
 
 appName: Miro Terminal relay
 sdkVersion: SDK_V2
 
-sdkUri: https://localhost:3001/relay.html?embedOrigins=https://YOUR-USER.github.io
+sdkUri: https://localhost:3001/relay.html
 
 # None. It never touches the board.
 scopes: []

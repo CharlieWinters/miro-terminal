@@ -90,10 +90,20 @@ then lives at `https://YOUR-USER.github.io/miro-terminal/app/index.html`.
 | | App URL | Scopes | Who installs it |
 | --- | --- | --- | --- |
 | **Miro Terminal** | `https://YOUR-USER.github.io/miro-terminal/app/index.html` | `boards:read`, `boards:write`, `identity:read` | anyone who wants to see history |
-| **Miro Terminal relay** | `https://localhost:3001/relay.html?embedOrigins=https://YOUR-USER.github.io` | none | only you |
+| **Miro Terminal relay** | `https://localhost:3001/relay.html` | none | only you |
 
 Paste `app-manifest.yaml` and `app-manifest-relay.yaml` into the two apps
 respectively, replacing `YOUR-USER`. Install both on your developer team.
+
+Then tell the relay where your embed is published, in `backend/.env`:
+
+```
+EMBED_ORIGINS=https://YOUR-USER.github.io
+```
+
+This cannot go on the relay app's App URL: Miro normalises `sdkUri` and drops
+query parameters from it. Without it, live terminals cannot connect — the relay
+page says so and the embed shows the reason.
 
 Then **click the relay app's icon once**. A second app's headless iframe is only
 reliably loaded on a cold board load after the user has opened it at least
@@ -175,6 +185,7 @@ is ever copy-pasted with real values in it.
 | `ALLOWED_ROOT` | your home dir | `cwd` requests are confined here, path-traversal checked. |
 | `TRUST_PROXY` | unset | `1` if TLS terminates at a proxy in front. |
 | `CORS_ALLOWED_ORIGINS` | unset | Extra allowed origins, comma-separated. |
+| `EMBED_ORIGINS` | unset | Where you published the embed, e.g. `https://you.github.io`. Required for live terminals; no default, because opening a session is what authorises keystrokes. |
 
 Frontend: `VITE_WRAPPER_URL` if you host the app and the wrapper somewhere
 unrelated to each other. Otherwise the wrapper URL is derived from wherever the
@@ -206,7 +217,7 @@ miro-terminal/
 | Symptom | Cause |
 | --- | --- |
 | Embed says it runs on another machine, but it's yours | Dev server not running, or the app's origin changed and the saved backend URL was lost with it |
-| Live mode says the relay refuses this origin | The relay app's App URL is missing `?embedOrigins=https://YOUR-USER.github.io`. The relay page also lists what it accepts |
+| Live mode says the relay refuses this origin | `EMBED_ORIGINS` is unset or wrong in `backend/.env` — restart the server after changing it. The relay page lists what it accepts |
 | Live mode never connects at all | Relay app not installed, or installed but never opened once |
 | Terminal opens but shows nothing | Certificate not trusted. A cert warning cannot render in a modal, so it fails silently |
 | `[INPUT]` and friends stop expanding | The embed URL lost its `embedId`, which is the key board context is looked up under |

@@ -59,15 +59,16 @@
   // is what authorises keystrokes. Leaving it at the localhost default means
   // published embeds simply cannot reach the relay — a closed door rather than
   // an open one, which is the right way round for a default.
-  var ALLOWED_EMBED_ORIGINS = (function () {
-    var configured = (new URLSearchParams(location.search).get('embedOrigins') || '')
-      .split(',').map(function (o) { return o.trim(); }).filter(Boolean);
-    return configured.concat([
-      'http://localhost:5173',
-      'https://localhost:5173',
-      'http://localhost:4173'
-    ]);
-  })();
+  // Which origins may ask this relay to open a session — i.e. where the embed
+  // is published. Fetched from the terminal server, same-origin, because that
+  // is the only place it can come from: Miro normalises an app's sdkUri and
+  // drops query parameters, so configuring it on the App URL does not survive.
+  // Set EMBED_ORIGINS in backend/.env.
+  var ALLOWED_EMBED_ORIGINS = [
+    'http://localhost:5173',
+    'https://localhost:5173',
+    'http://localhost:4173'
+  ];
   var M = {
     open: 'mt-relay:open',
     ready: 'mt-relay:ready',
@@ -190,9 +191,9 @@
           embedId: d.embedId,
           origin: event.origin,
           accepting: ALLOWED_EMBED_ORIGINS,
-          reason: 'This relay does not accept embeds from ' + event.origin +
-                  '. Add ?embedOrigins=' + event.origin +
-                  ' to the relay app\'s App URL in the Miro Developer Dashboard.'
+          reason: 'The terminal relay does not accept embeds from ' + event.origin +
+                  '. Set EMBED_ORIGINS=' + event.origin +
+                  ' in backend/.env and restart the terminal server.'
         }, event.origin);
       } catch (e) {
         /* nothing more to try */
@@ -257,14 +258,34 @@
 
   // Stated on screen because a relay that is running but does not trust your
   // embed's origin looks identical to one that is not running at all.
-  var originsEl = document.getElementById('origins');
-  if (originsEl) {
-    originsEl.textContent = 'Accepting embeds from: ' + ALLOWED_EMBED_ORIGINS.join(', ');
+  function showOrigins() {
+    var el = document.getElementById('origins');
+    if (!el) return;
+    var published = ALLOWED_EMBED_ORIGINS.filter(function (o) {
+      return o.indexOf('localhost') === -1;
+    });
+    el.textContent = published.length
+      ? 'Accepting embeds from: ' + ALLOWED_EMBED_ORIGINS.join(', ')
+      : 'No published embed origin configured — set EMBED_ORIGINS in backend/.env ' +
+        'and restart the server, or live terminals cannot connect.';
+    el.className = published.length ? '' : 'bad';
   }
 
-  announce();
-  console.log('[relay] listening at', location.origin,
-              '· accepting embeds from', ALLOWED_EMBED_ORIGINS.join(', '));
+  // Config first, then start listening. Same-origin, so this is a millisecond,
+  // and embeds retry for several seconds — there is no race worth the
+  // complexity of queueing messages against one.
+  fetch('/api/relay-config')
+    .then(function (res) { return res.ok ? res.json() : { embedOrigins: [] }; })
+    .catch(function () { return { embedOrigins: [] }; })
+    .then(function (cfg) {
+      (cfg.embedOrigins || []).forEach(function (o) {
+        if (ALLOWED_EMBED_ORIGINS.indexOf(o) === -1) ALLOWED_EMBED_ORIGINS.push(o);
+      });
+      showOrigins();
+      announce();
+      console.log('[relay] listening at', location.origin,
+                  '· accepting embeds from', ALLOWED_EMBED_ORIGINS.join(', '));
+    });
 
   // The toolbar icon opens this page as a panel. Its real purpose is activation:
   // a second app's headless iframe is only reliably loaded on a cold board once
