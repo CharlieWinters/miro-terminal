@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Terminal</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-  <link rel="stylesheet" href="styles.css">
+  <!-- Relative on purpose: this file is served both by the terminal server
+       (as the modal) and from public hosting (as a board embed), and
+       styles.css is published alongside it in both places. -->
+  <link rel="stylesheet" href="./styles.css">
   <!-- Deliberately does NOT load the Miro Web SDK. This page is served by the
        terminal server, so it is on a different origin from the app; the SDK
        loads there but never completes its connection handshake ("SDK is not
@@ -116,6 +119,24 @@
     
     // Unique embed ID from URL (shared when embed is copied)
     const embedId = params.get('embedId') || '';
+
+    // -------------------------------------------------------------------------
+    // Which pipe carries the PTY, and therefore where this page is running.
+    //
+    //   ws     — served BY the terminal server, so same-origin with it: a direct
+    //            websocket, and /api/* calls work. This is the modal.
+    //   relay  — served publicly, as a board embed. It cannot open a socket to
+    //            localhost, nor call /api/* at all, so the envelopes travel by
+    //            postMessage to a relay running on the developer's machine.
+    //
+    // Set by whoever opens the page; defaults to ws, so anything that does not
+    // ask for relay behaves exactly as before. Note that in relay mode this page
+    // never sees a PTY token — the relay mints one, on the machine that owns the
+    // session, and a token has no business on a public page.
+    // -------------------------------------------------------------------------
+    const TRANSPORT_MODE = params.get('transport') === 'relay' ? 'relay' : 'ws';
+    const sameOriginApi = TRANSPORT_MODE === 'ws';
+    console.log('[terminal] transport mode:', TRANSPORT_MODE, '· origin:', location.origin);
 
     // Debug: last context fetch result (for console inspection)
     let lastContextFetch = { at: null, input: '', named: {} };
@@ -908,7 +929,16 @@
           console.log('[context] via app iframe: input=', result.input.length, 'char(s), named=', Object.keys(result.named));
           return result;
         } catch (e) {
-          console.warn('[context] app iframe did not answer, falling back to the relay:', e.message);
+          console.warn('[context] app iframe did not answer:', e.message);
+        }
+
+        // The HTTP fallback below only exists for the solo local-dev flow, where
+        // this page is served by the terminal server and no app iframe is
+        // listening. Served publicly there is no same-origin API to call, and
+        // reaching the server's would be a public-to-loopback request — the one
+        // thing that is categorically blocked.
+        if (!sameOriginApi) {
+          return { input: '', named: {}, viewport: null };
         }
 
         // Signal that this embed needs context; Miro app polls and will push.

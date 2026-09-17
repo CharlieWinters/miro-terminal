@@ -10,7 +10,8 @@
     "lint": "tsc --noEmit",
     "pages:publish": "npm run pages:publish:app && npm run pages:publish:wrapper",
     "pages:publish:app": "npm run build && gh-pages -d dist -e app --add",
-    "pages:publish:wrapper": "gh-pages -d terminal-wrapper -e terminal-wrapper --add"
+    "pages:publish:wrapper": "npm run pages:stage-terminal && gh-pages -d terminal-wrapper -e terminal-wrapper --add",
+    "pages:stage-terminal": "node -e \"const fs=require('fs');for (const f of ['terminal.html','styles.css']) fs.copyFileSync('../backend/public/'+f, 'terminal-wrapper/'+f);console.log('staged terminal.html + styles.css into terminal-wrapper/')\""
   },
   "devDependencies": {
     "@mirohq/websdk-types": "latest",

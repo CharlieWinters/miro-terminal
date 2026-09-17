@@ -3,3 +3,9 @@ dist/
 .env
 *.pem
 .DS_Store
+
+# Staged copies of the terminal UI, placed next to the wrapper at publish time
+# so the same file can be served BOTH by the terminal server (as the modal) and
+# from public hosting (as a board embed). backend/public is the only source.
+frontend/terminal-wrapper/terminal.html
+frontend/terminal-wrapper/styles.css
