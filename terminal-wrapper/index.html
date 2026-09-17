@@ -355,6 +355,25 @@
       return;
     }
 
+    // The app cannot see the server at all, because the app is served publicly
+    // and a public origin may not reach loopback. That is NOT the same as the
+    // server being down, and saying so would be a confident lie — the previous
+    // version of this branch reported exactly that. Offer both ways in and let
+    // the surfaces that CAN see the server do the reporting.
+    if (s.canProbeBackend === false) {
+      render({
+        dot: 'ok',
+        title: 'Your terminal',
+        body: 'This session lives on <code>' + s.terminalBase + '</code>. Flip ' +
+              '<strong>Live</strong> above to type into it here on the board, or open it in a ' +
+              'modal. Whether it is actually running is something only those can tell you — ' +
+              'this page is public, so it cannot reach your machine to check.',
+        button: true,
+        meta: sessionName ? 'session: ' + sessionName : ''
+      });
+      return;
+    }
+
     // Server is up but does not have this session — almost always a second
     // developer with their own server, looking at someone else's terminal.
     // The old page connected them to nothing and said nothing useful.
