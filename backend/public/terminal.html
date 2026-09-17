@@ -676,6 +676,15 @@
           handlers.onClose({ reason: d.error || 'relay closed the session' });
           return;
         }
+        // The relay is there but will not talk to this origin. A configuration
+        // problem, so retrying is pointless — stop and show what to change.
+        if (d.type === 'mt-relay:refused') {
+          open = false;
+          nonce = null;
+          if (retry) { clearInterval(retry); retry = null; }
+          handlers.onClose({ reason: d.reason, fatal: true });
+          return;
+        }
       }
 
       function requestOpen() {
@@ -838,9 +847,16 @@
           }
         },
 
-        onClose() {
+        onClose(info) {
+          // A fatal close is a configuration answer, not a dropped connection.
+          // Reconnecting would just hide it behind a retry counter.
+          if (info && info.fatal) {
+            setStatus('error', info.reason || 'Refused');
+            console.error('[terminal]', info.reason);
+            return;
+          }
           if (!shouldReconnect) return;
-          setStatus('disconnected', 'Disconnected');
+          setStatus('disconnected', info && info.reason ? info.reason : 'Disconnected');
           if (reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
             setStatus('connecting', `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`);

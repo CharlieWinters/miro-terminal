@@ -206,7 +206,8 @@ miro-terminal/
 | Symptom | Cause |
 | --- | --- |
 | Embed says it runs on another machine, but it's yours | Dev server not running, or the app's origin changed and the saved backend URL was lost with it |
-| Live mode never connects | Relay app not installed, not yet opened once, or its `embedOrigins` does not list your Pages origin — the relay page states which origins it accepts |
+| Live mode says the relay refuses this origin | The relay app's App URL is missing `?embedOrigins=https://YOUR-USER.github.io`. The relay page also lists what it accepts |
+| Live mode never connects at all | Relay app not installed, or installed but never opened once |
 | Terminal opens but shows nothing | Certificate not trusted. A cert warning cannot render in a modal, so it fails silently |
 | `[INPUT]` and friends stop expanding | The embed URL lost its `embedId`, which is the key board context is looked up under |
 | A publish seems to have no effect | Check the bundle hash actually changed |

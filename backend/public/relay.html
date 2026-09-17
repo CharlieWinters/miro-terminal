@@ -73,6 +73,7 @@
     ready: 'mt-relay:ready',
     frame: 'mt-relay:frame',
     closed: 'mt-relay:closed',
+    refused: 'mt-relay:refused',
     hello: 'mt-relay:hello'
   };
 
@@ -175,6 +176,27 @@
     // through; the nonce below is what actually authorises anything privileged.
     if (event.origin !== 'null' && ALLOWED_EMBED_ORIGINS.indexOf(event.origin) === -1) {
       console.warn('[relay] ignoring message from', event.origin);
+      // Say so, rather than going quiet. An unlisted origin is far and away the
+      // most likely first-run mistake, and silence makes it indistinguishable
+      // from the relay app not being installed at all — two problems with
+      // completely different fixes. The refusal names the origin and the
+      // setting, and leaks nothing: the sender already knows its own origin and
+      // that something declined to talk to it.
+      try {
+        event.source.postMessage({
+          type: M.refused,
+          v: 1,
+          sid: d.sid,
+          embedId: d.embedId,
+          origin: event.origin,
+          accepting: ALLOWED_EMBED_ORIGINS,
+          reason: 'This relay does not accept embeds from ' + event.origin +
+                  '. Add ?embedOrigins=' + event.origin +
+                  ' to the relay app\'s App URL in the Miro Developer Dashboard.'
+        }, event.origin);
+      } catch (e) {
+        /* nothing more to try */
+      }
       return;
     }
 
