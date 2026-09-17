@@ -73,11 +73,24 @@
                color: var(--muted); flex: 0 0 auto; }
     #root.can-live #livebar, #root.live #livebar { display: flex; }
     #livebar .grow { flex: 1; }
-    .switch { display: inline-flex; align-items: center; gap: .4rem; cursor: pointer;
-              user-select: none; font-weight: 600; color: var(--text); }
-    .switch input { margin: 0; }
-    .live-dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--bad); }
-    .live-dot.on { background: var(--ok); }
+    /* Two modes, one control. The embed either shows what the terminal did or
+       IS the terminal; those are the only two things it can be, so a toggle
+       says it better than a checkbox called "Live" did. Full screen is an
+       action rather than a third mode, so it sits apart. */
+    .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px;
+           overflow: hidden; }
+    .seg button { font: inherit; font-size: .72rem; font-weight: 600; padding: .22rem .6rem;
+                  background: transparent; color: var(--muted); border: 0; cursor: pointer; }
+    .seg button + button { border-left: 1px solid var(--border); }
+    .seg button:hover:not(.on) { color: var(--text); }
+    .seg button.on { background: var(--accent); color: #fff; }
+    .seg button.on.livemode { background: var(--ok); }
+    .seg button:disabled { opacity: .4; cursor: default; }
+    .iconbtn { font: inherit; font-size: .72rem; padding: .22rem .5rem; cursor: pointer;
+               background: transparent; color: var(--muted); border: 1px solid var(--border);
+               border-radius: 6px; }
+    .iconbtn:hover { color: var(--text); border-color: var(--accent); }
+    .iconbtn:disabled { opacity: .4; cursor: default; }
     /* Once there IS history, that is what the embed is for — so the message
        collapses to one line and the output gets the rest of the space. The full
        wording stays available as the strip's tooltip rather than being deleted. */
@@ -85,6 +98,10 @@
              padding: .5rem .7rem; font-size: .78rem; color: var(--muted);
              background: #131a22; border-bottom: 1px solid var(--border); }
     #root.compact #strip { display: flex; }
+    /* The toggle bar already sits at the top and already says which mode this
+       is, so a second status bar under it is just stacked chrome. When both
+       would appear, the status goes into the toggle bar instead. */
+    #root.can-live.compact #strip { display: none; }
     #root.compact #content { padding: 0; gap: 0; justify-content: flex-start; }
     #root.compact .card { display: none; }
     #root.compact #history-wrap { flex: 1; min-height: 0; max-width: none; width: 100%;
@@ -101,9 +118,12 @@
 <body>
   <div id="root">
     <div id="livebar">
-      <span class="live-dot" id="live-dot"></span>
-      <label class="switch"><input type="checkbox" id="live-toggle" /> Live</label>
+      <span class="seg">
+        <button type="button" id="mode-history">History</button>
+        <button type="button" id="mode-live" class="livemode">Live</button>
+      </span>
       <span class="grow" id="live-note"></span>
+      <button type="button" id="fullscreen-btn" class="iconbtn" title="Open the terminal full screen">⤢ Full screen</button>
     </div>
     <iframe id="termframe" title="Terminal" allow="clipboard-read; clipboard-write"></iframe>
     <div id="content">
@@ -117,7 +137,6 @@
       <div class="spinner" id="spinner"></div>
       <h1 id="title">Looking for the Miro Terminal app…</h1>
       <p id="body">Checking whether this browser is running the terminal for this session.</p>
-      <button type="button" id="dev-btn" hidden>Open in developer mode</button>
       <p class="err" id="err" hidden></p>
       <p class="meta" id="meta" hidden></p>
     </div>
@@ -193,7 +212,6 @@
   var spinner = document.getElementById('spinner');
   var title = document.getElementById('title');
   var body = document.getElementById('body');
-  var devBtn = document.getElementById('dev-btn');
   var errEl = document.getElementById('err');
   var metaEl = document.getElementById('meta');
 
@@ -202,7 +220,6 @@
     rootEl.classList.remove('compact');
     title.innerHTML = (opts.dot ? '<span class="dot ' + opts.dot + '"></span>' : '') + opts.title;
     body.innerHTML = opts.body;
-    devBtn.hidden = !opts.button;
     if (opts.meta) { metaEl.hidden = false; metaEl.textContent = opts.meta; }
   }
 
@@ -253,8 +270,9 @@
 
   var rootEl = document.getElementById('root');
   var frameEl = document.getElementById('termframe');
-  var toggleEl = document.getElementById('live-toggle');
-  var dotEl = document.getElementById('live-dot');
+  var histBtn = document.getElementById('mode-history');
+  var liveBtn = document.getElementById('mode-live');
+  var fullBtn = document.getElementById('fullscreen-btn');
   var noteEl = document.getElementById('live-note');
   var lastState = null;
 
@@ -276,31 +294,38 @@
   }
 
   function applyLive(state) {
+    // Both Live and Full screen need a terminal server; a viewer has neither,
+    // so they get history and no controls rather than controls that cannot work.
     var canGoLive = Boolean(state && state.terminalBase);
     rootEl.classList.toggle('can-live', canGoLive);
-    toggleEl.disabled = !canGoLive;
-    toggleEl.checked = liveWanted && canGoLive;
+    liveBtn.disabled = !canGoLive;
+    fullBtn.disabled = !canGoLive;
 
-    if (!liveWanted || !canGoLive) {
+    var live = liveWanted && canGoLive;
+    histBtn.classList.toggle('on', !live);
+    liveBtn.classList.toggle('on', live);
+    noteEl.textContent = live ? (sessionName || '') : '';
+
+    if (!live) {
       rootEl.classList.remove('live');
-      dotEl.classList.remove('on');
       if (frameEl.src) frameEl.removeAttribute('src');
       return;
     }
     rootEl.classList.add('live');
-    dotEl.classList.add('on');
-    noteEl.textContent = sessionName || '';
     var next = terminalUrl(state);
     // Only reload when the URL actually changes; a refresh of state should not
     // restart a working terminal.
     if (frameEl.src !== next) frameEl.src = next;
   }
 
-  toggleEl.addEventListener('change', function () {
-    liveWanted = toggleEl.checked;
-    try { localStorage.setItem(LIVE_KEY, liveWanted ? '1' : '0'); } catch (e) {}
+  function setMode(wantLive) {
+    liveWanted = wantLive;
+    try { localStorage.setItem(LIVE_KEY, wantLive ? '1' : '0'); } catch (e) {}
     applyLive(lastState);
-  });
+  }
+
+  histBtn.addEventListener('click', function () { setMode(false); });
+  liveBtn.addEventListener('click', function () { setMode(true); });
 
   /**
    * One line instead of a card, used whenever there is history to show.
@@ -318,6 +343,12 @@
     document.getElementById('strip-title').textContent = opts.title;
     document.getElementById('strip-meta').textContent = opts.meta || '';
     document.getElementById('strip').title = opts.detail || '';
+    // With the toggle bar showing, put the status there rather than adding a
+    // second bar beneath it.
+    if (rootEl.classList.contains('can-live')) {
+      noteEl.textContent = opts.title + (opts.meta ? ' · ' + opts.meta : '');
+      noteEl.title = opts.detail || '';
+    }
   }
 
   function showError(msg) {
@@ -413,9 +444,8 @@
       render({
         dot: 'ok',
         title: 'Your terminal is running',
-        body: 'This session is live on <code>' + s.terminalBase + '</code>. Open it in a modal, ' +
-              'or flip <strong>Live</strong> above to type into it right here on the board.',
-        button: true,
+        body: 'This session is live on <code>' + s.terminalBase + '</code>. Switch to ' +
+              '<strong>Live</strong> above to type into it here on the board, or open it full screen.',
         meta: sessionName ? 'session: ' + sessionName : ''
       });
       return;
@@ -461,14 +491,27 @@
     // version of this branch reported exactly that. Offer both ways in and let
     // the surfaces that CAN see the server do the reporting.
     if (s.canProbeBackend === false) {
+      // With history to show, the same reasoning as the viewer case applies:
+      // the output is the point and the toggle already says what mode this is.
+      if (s.history) {
+        renderCompact({
+          dot: 'ok',
+          title: 'History',
+          meta: sessionName || '',
+          detail:
+            'This session lives on ' + s.terminalBase + '. Switch to Live to type into it here ' +
+            'on the board, or open it full screen. Whether it is actually running is something ' +
+            'only those can tell you — this page is public, so it cannot reach your machine.',
+        });
+        return;
+      }
       render({
         dot: 'ok',
         title: 'Your terminal',
-        body: 'This session lives on <code>' + s.terminalBase + '</code>. Flip ' +
-              '<strong>Live</strong> above to type into it here on the board, or open it in a ' +
-              'modal. Whether it is actually running is something only those can tell you — ' +
-              'this page is public, so it cannot reach your machine to check.',
-        button: true,
+        body: 'This session lives on <code>' + s.terminalBase + '</code>. Switch to ' +
+              '<strong>Live</strong> above to type into it here on the board, or open it ' +
+              'full screen. Whether it is actually running is something only those can tell ' +
+              'you — this page is public, so it cannot reach your machine to check.',
         meta: sessionName ? 'session: ' + sessionName : ''
       });
       return;
@@ -483,8 +526,7 @@
         title: 'This session is on another machine',
         body: 'Your terminal server is running, but it does not hold this session — it was started ' +
               'on someone else\'s computer. Create your own terminal from the Miro Terminal panel. ' +
-              'You can still open this one in developer mode, which will start a fresh shell under the same id.',
-        button: true
+              'You can still open this one full screen, which will start a fresh shell under the same id.',
       });
       return;
     }
@@ -553,20 +595,24 @@
     if (d.type === MSG.historyChanged) { post({ type: MSG.hello, v: 1, embedId: embedId }); return; }
 
     if (d.type === MSG.state) { applyState(d); return; }
-    if (d.type === MSG.opened) { devBtn.disabled = false; errEl.hidden = true; return; }
+    if (d.type === MSG.opened) { fullBtn.disabled = false; errEl.hidden = true; return; }
     if (d.type === MSG.error) {
-      devBtn.disabled = false;
+      fullBtn.disabled = false;
       showError(d.error || 'The app could not open the terminal.');
       return;
     }
   });
 
-  devBtn.addEventListener('click', function () {
-    devBtn.disabled = true;
+  // Full screen is the same request as before — the app opens the terminal as a
+  // modal on the machine that owns the session. Only the name changed: "open in
+  // developer mode" described a world where the modal was the ONLY way to type
+  // into a terminal, which stopped being true when Live arrived.
+  fullBtn.addEventListener('click', function () {
+    fullBtn.disabled = true;
     errEl.hidden = true;
     post({ type: MSG.openDev, v: 1, embedId: embedId });
     // Re-enable even if no answer comes back, so the button is never stuck.
-    setTimeout(function () { devBtn.disabled = false; }, 4000);
+    setTimeout(function () { fullBtn.disabled = false; }, 4000);
   });
 
   // Safety net behind the history-changed push: covers a nudge arriving while
