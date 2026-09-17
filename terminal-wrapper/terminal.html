@@ -630,15 +630,19 @@
         return out;
       }
 
+      // Wildcard to ask, allowlist to listen — see onMessage. Posting with an
+      // exact target origin to every frame logs a console error for each frame
+      // that does not match, and a board with several apps installed buries the
+      // real errors under hundreds of them. Nothing outbound here is secret: a
+      // sid and an embedId, both already board content. The nonce travels the
+      // other way, and a reply is ignored unless its origin is allowlisted.
       function post(message) {
         if (relayWindow && relayOrigin) {
           try { relayWindow.postMessage(message, relayOrigin); } catch (e) {}
           return;
         }
         targets().forEach(function (win) {
-          relayOrigins.forEach(function (o) {
-            try { win.postMessage(message, o); } catch (e) {}
-          });
+          try { win.postMessage(message, '*'); } catch (e) {}
         });
       }
 
