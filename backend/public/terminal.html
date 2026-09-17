@@ -507,8 +507,61 @@
       }
     }
 
+    // -------------------------------------------------------------------------
+    // PTY transport
+    //
+    // Every exchange with the PTY is already a JSON envelope — {type:'input'} and
+    // {type:'resize'} out, {type:'data'|'connected'|'error'} in — so which pipe
+    // carries them is an implementation detail rather than part of the protocol.
+    //
+    // One implementation today: a direct websocket, usable because this page is
+    // served BY the terminal server and so is same-origin with it. A second is
+    // coming for when this page is served publicly, as a board embed, and cannot
+    // open a socket to localhost at all — there the envelopes travel by
+    // postMessage to a relay on the developer's machine. Identical envelopes,
+    // different pipe.
+    //
+    // Interface: connect(), send(envelope) -> bool, isOpen(), close().
+    // Inbound events arrive through the handlers given to the factory.
+    // -------------------------------------------------------------------------
+    function createWebSocketTransport(url, handlers) {
+      let ws = null;
+      return {
+        kind: 'websocket',
+        connect() {
+          ws = new WebSocket(url);
+          ws.onopen = () => handlers.onOpen();
+          ws.onmessage = (event) => {
+            let envelope = null;
+            try {
+              envelope = JSON.parse(event.data);
+            } catch (err) {
+              console.error('Error parsing message:', err);
+              return;
+            }
+            handlers.onEnvelope(envelope);
+          };
+          ws.onclose = (event) => handlers.onClose(event);
+          ws.onerror = (error) => handlers.onError(error);
+        },
+        send(envelope) {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+          ws.send(JSON.stringify(envelope));
+          return true;
+        },
+        isOpen() {
+          return Boolean(ws) && ws.readyState === WebSocket.OPEN;
+        },
+        close() {
+          if (!ws) return;
+          ws.close();
+          ws = null;
+        },
+      };
+    }
+
     // Track current connection for cleanup
-    let currentWs = null;
+    let currentTransport = null;
     let currentTerm = null;
     let shouldReconnect = true;
 
@@ -516,10 +569,10 @@
       setStatus('connecting', 'Connecting...');
 
       // Clean up existing connection
-      if (currentWs) {
+      if (currentTransport) {
         shouldReconnect = false; // Prevent auto-reconnect during cleanup
-        currentWs.close();
-        currentWs = null;
+        currentTransport.close();
+        currentTransport = null;
       }
       if (currentTerm) {
         currentTerm.dispose();
@@ -578,63 +631,47 @@
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsProtocol}//${window.location.host}/pty?sid=${encodeURIComponent(sessionId)}&token=${encodeURIComponent(token)}`;
       
-      let ws = null;
+      let transport = null;
       let reconnectAttempts = 0;
       const maxReconnectAttempts = 5;
       const reconnectDelay = 2000;
 
-      function connect() {
-        ws = new WebSocket(wsUrl);
-        currentWs = ws;
-
-        ws.onopen = () => {
+      /** Handlers are transport-agnostic on purpose: nothing below knows or
+       * cares whether an envelope arrived over a socket or a postMessage. */
+      const transportHandlers = {
+        onOpen() {
           setStatus('connected', `Connected (${currentSettings.sessionName || 'default'})`);
           reconnectAttempts = 0;
-          
-          // Send initial resize
-          ws.send(JSON.stringify({
-            type: 'resize',
-            cols: term.cols,
-            rows: term.rows
-          }));
-        };
+          transport.send({ type: 'resize', cols: term.cols, rows: term.rows });
+        },
 
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            
-            switch (msg.type) {
-              case 'connected':
-                console.log('Session connected:', sessionId);
-                break;
-                
-              case 'data':
-                // Use highlighted write for output
-                term.writeWithHighlight(msg.data);
-                // Mark the board copy stale; a screen snapshot is taken when
-                // the debounce fires (see the history section above).
-                appendHistory();
-                break;
-                
-              case 'error':
-                console.error('Server error:', msg.message);
-                setStatus('error', `Error: ${msg.message}`);
-                break;
-                
-              default:
-                console.warn('Unknown message type:', msg.type);
-            }
-          } catch (err) {
-            console.error('Error parsing message:', err);
+        onEnvelope(msg) {
+          switch (msg.type) {
+            case 'connected':
+              console.log('Session connected:', sessionId);
+              break;
+
+            case 'data':
+              // Use highlighted write for output
+              term.writeWithHighlight(msg.data);
+              // Mark the board copy stale; a screen snapshot is taken when
+              // the debounce fires (see the history section above).
+              appendHistory();
+              break;
+
+            case 'error':
+              console.error('Server error:', msg.message);
+              setStatus('error', `Error: ${msg.message}`);
+              break;
+
+            default:
+              console.warn('Unknown message type:', msg.type);
           }
-        };
+        },
 
-        ws.onclose = (event) => {
+        onClose() {
           if (!shouldReconnect) return;
-          
           setStatus('disconnected', 'Disconnected');
-          
-          // Attempt reconnect
           if (reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
             setStatus('connecting', `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`);
@@ -642,11 +679,17 @@
           } else {
             setStatus('error', 'Connection lost. Refresh to reconnect.');
           }
-        };
+        },
 
-        ws.onerror = (error) => {
-          console.error('WebSocket error:', error);
-        };
+        onError(error) {
+          console.error('Transport error:', error);
+        },
+      };
+
+      function connect() {
+        transport = createWebSocketTransport(wsUrl, transportHandlers);
+        currentTransport = transport;
+        transport.connect();
       }
 
       // Set up reconnect callback for settings changes
@@ -1046,7 +1089,7 @@
 
       // Handle terminal input with variable expansion
       term.onData(async (data) => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
+        if (!transport || !transport.isOpen()) {
           return;
         }
 
@@ -1066,17 +1109,17 @@
                 const expanded = await expandVariables(inputBuffer);
                 
                 // Clear the current line in shell (Ctrl+U kills line, then we send expanded)
-                ws.send(JSON.stringify({ type: 'input', data: '\x15' })); // Ctrl+U
+                transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
                 
                 // Send the expanded command
-                ws.send(JSON.stringify({ type: 'input', data: expanded + '\r' }));
+                transport.send({ type: 'input', data: expanded + '\r' });
               } catch (error) {
                 console.error('Error expanding variables:', error);
                 // Never send raw <...> to shell (causes redirection parse errors).
                 // Clear line and send safe expansion (async vars become placeholders).
                 const fallback = expandSyncVariablesSafe(inputBuffer);
-                ws.send(JSON.stringify({ type: 'input', data: '\x15' }));
-                ws.send(JSON.stringify({ type: 'input', data: fallback + '\r' }));
+                transport.send({ type: 'input', data: '\x15' });
+                transport.send({ type: 'input', data: fallback + '\r' });
               } finally {
                 isProcessingAsync = false;
               }
@@ -1085,14 +1128,14 @@
               const expanded = expandSyncVariablesSafe(inputBuffer);
               
               // Clear the current line in shell (Ctrl+U kills line, then we send expanded)
-              ws.send(JSON.stringify({ type: 'input', data: '\x15' })); // Ctrl+U
+              transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
               
               // Send the expanded command
-              ws.send(JSON.stringify({ type: 'input', data: expanded + '\r' }));
+              transport.send({ type: 'input', data: expanded + '\r' });
             }
           } else {
             // No variables, just send Enter
-            ws.send(JSON.stringify({ type: 'input', data: '\r' }));
+            transport.send({ type: 'input', data: '\r' });
           }
           
           // Reset buffer
@@ -1100,27 +1143,27 @@
         } else if (data === '\x7f' || data === '\b') {
           // Backspace - remove last character from buffer
           inputBuffer = inputBuffer.slice(0, -1);
-          ws.send(JSON.stringify({ type: 'input', data }));
+          transport.send({ type: 'input', data });
         } else if (data.charCodeAt(0) >= 32 || data === '\t') {
           // Printable character or tab - add to buffer
           inputBuffer += data;
-          ws.send(JSON.stringify({ type: 'input', data }));
+          transport.send({ type: 'input', data });
         } else {
           // Control characters (Ctrl+C, etc.) - send directly, reset buffer
           inputBuffer = '';
-          ws.send(JSON.stringify({ type: 'input', data }));
+          transport.send({ type: 'input', data });
         }
       });
 
       // Handle resize
       const handleResize = () => {
         fitAddon.fit();
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
+        if (transport && transport.isOpen()) {
+          transport.send({
             type: 'resize',
             cols: term.cols,
             rows: term.rows
-          }));
+          });
         }
       };
 
