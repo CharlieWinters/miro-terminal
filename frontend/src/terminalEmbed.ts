@@ -333,11 +333,14 @@ export async function placeTerminalEmbed(
   const boardName = (boardInfo as { id: string; title?: string }).title || boardId;
 
   const embedId = generateEmbedId();
+  // No appOrigins here any more. It went into the embed URL, which is board
+  // content, and the wrapper now ignores it for exactly that reason: the app is
+  // published to the same origin as the wrapper, so naming it achieved nothing
+  // except putting a security-relevant allowlist somewhere editable.
   const extraParams: Record<string, string> = {
     embedId,
     boardId,
     boardName,
-    appOrigins: window.location.origin,
   };
   if (embedOptions?.sessionName) extraParams.name = embedOptions.sessionName;
   if (embedOptions?.cwd) extraParams.cwd = embedOptions.cwd;

@@ -409,6 +409,11 @@ async function openDeveloperModal(embedId: string): Promise<void> {
   modalUrl.searchParams.set('embedId', embedId);
   // Where to send board work: the modal's own SDK never connects, being on a
   // foreign origin, so it asks this iframe instead.
+  // Still passed, and still trusted, but only because of where the modal is
+  // served from: the terminal server, on loopback. A board embed cannot load
+  // loopback, so this URL can never be board content, and terminal.html only
+  // honours the parameter when it finds itself on a loopback origin. The
+  // published copy of that same file ignores it.
   modalUrl.searchParams.set('appOrigins', window.location.origin);
 
   await miro.board.ui.openModal({
