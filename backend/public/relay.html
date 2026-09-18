@@ -230,9 +230,14 @@
     var d = event.data;
     if (!d || typeof d !== 'object') return;
     if (d.type !== M.open && d.type !== M.frame && d.type !== M.hello && d.type !== M.close) return;
-    // An opaque-origin (sandboxed) embed arrives as "null" and is allowed
-    // through; the nonce below is what actually authorises anything privileged.
-    if (event.origin !== 'null' && ALLOWED_EMBED_ORIGINS.indexOf(event.origin) === -1) {
+    // No carve-out for an opaque origin. This used to let "null" straight
+    // through on the belief that a real embed is sandboxed and arrives that
+    // way. Measured on 18 Sep 2026: Miro renders the embed iframe with
+    // allow-same-origin, so a genuine embed reports the origin it is served
+    // from and matches the list below like anything else. The carve-out was
+    // therefore not serving any legitimate caller, while letting any page that
+    // sandboxes itself skip the check entirely — which is free to do.
+    if (ALLOWED_EMBED_ORIGINS.indexOf(event.origin) === -1) {
       console.warn('[relay] ignoring message from', event.origin);
       // Say so, rather than going quiet. An unlisted origin is far and away the
       // most likely first-run mistake, and silence makes it indistinguishable
@@ -259,8 +264,7 @@
     }
 
     if (d.type === M.hello) {
-      post(event.source, event.origin === 'null' ? '*' : event.origin,
-           { type: M.hello, v: 1, relayOrigin: location.origin });
+      post(event.source, event.origin, { type: M.hello, v: 1, relayOrigin: location.origin });
       return;
     }
 
@@ -280,10 +284,12 @@
 
     if (d.type === M.open) {
       if (!d.sid) return;
-      openSession(d.sid, d.embedId || '', d.cwd, event.source,
-                  event.origin === 'null' ? '*' : event.origin)
+      // Exact target origin, never a wildcard. The reply to an `open` carries
+      // the nonce that authorises keystrokes, and the only reason it was ever
+      // wildcarded was to reach a caller whose origin read as "null".
+      openSession(d.sid, d.embedId || '', d.cwd, event.source, event.origin)
         .catch(function (err) {
-          post(event.source, event.origin === 'null' ? '*' : event.origin,
+          post(event.source, event.origin,
                { type: M.closed, v: 1, embedId: d.embedId, sid: d.sid, error: err.message });
         });
       return;
@@ -306,7 +312,8 @@
 
   // Announce to every frame on the page, so an embed that loaded before this
   // iframe did stops waiting. Embeds also retry, which is the path that has to
-  // work — an exact target origin can never match a sandboxed embed's "null".
+  // work. (This used to say an exact target origin can never match a sandboxed
+  // embed's "null". Measured false: embeds are not opaque-origin here.)
   function announce() {
     var targets = [];
     (function collect(win, depth) {
