@@ -20,71 +20,13 @@
   <div id="status-bar">
     <span id="status-indicator" class="disconnected"></span>
     <span id="status-text">Disconnected</span>
-    <button id="settings-btn" title="Settings">⚙️</button>
+    <!-- Read-only. The one thing the settings panel offered that was worth
+         having was telling you which session and board you were looking at;
+         that is a line, not a modal. -->
+    <span id="identity" title="This terminal's session and board"></span>
   </div>
   <div id="terminal-container"></div>
   
-  <!-- Settings Panel -->
-  <div id="settings-panel" class="hidden">
-    <div id="settings-content">
-      <div class="settings-header">
-        <h3>Terminal Settings</h3>
-        <button id="settings-close">✕</button>
-      </div>
-      <div class="settings-body">
-        <div class="settings-section">
-          <div class="settings-section-title">Session</div>
-          <div class="settings-field">
-            <label for="settings-session-name">Session Name</label>
-            <input type="text" id="settings-session-name" placeholder="(default - shared)">
-            <small>Leave empty for shared session, or name it (e.g., "frontend", "backend")</small>
-          </div>
-          <div class="settings-field">
-            <label for="settings-cwd">Working Directory</label>
-            <input type="text" id="settings-cwd" placeholder="~ (home directory)">
-            <small>Starting directory for <strong>new</strong> sessions (change session name to apply)</small>
-          </div>
-          <div class="session-id-display">
-            <span class="session-label">Current Session ID:</span>
-            <code id="current-session-id"></code>
-          </div>
-          <div class="settings-hint">
-            <small>💡 Different session names = independent terminals with separate settings</small>
-          </div>
-        </div>
-        
-        <div class="settings-section">
-          <div class="settings-section-title">Board Variables</div>
-          <div class="settings-field">
-            <label for="settings-board-url">Board URL</label>
-            <input type="text" id="settings-board-url" placeholder="https://miro.com/app/board/...">
-            <small>Variables like &lt;current_board&gt; will expand to this URL</small>
-          </div>
-          <div class="settings-field">
-            <label for="settings-board-name">Board Name</label>
-            <input type="text" id="settings-board-name" placeholder="My Board">
-            <small>Used for &lt;board_name&gt; variable</small>
-          </div>
-        </div>
-        
-        <div class="settings-info">
-          <strong>Available variables:</strong>
-          <ul>
-            <li><code>&lt;current_board&gt;</code> - Full board URL</li>
-            <li><code>&lt;board_id&gt;</code> - Board ID only</li>
-            <li><code>&lt;board_name&gt;</code> - Board name</li>
-            <li><code>&lt;viewport&gt;</code> - Current viewport (JSON: x, y, width, height)</li>
-            <li><code>&lt;input&gt;</code> - Content from items connected via Miro connectors</li>
-          </ul>
-        </div>
-      </div>
-      <div class="settings-footer">
-        <button id="settings-reset" class="btn-secondary">Reset to Default</button>
-        <button id="settings-save" class="btn-primary">Save</button>
-      </div>
-    </div>
-  </div>
-
   <script type="module">
     import { Terminal } from 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm';
     import { FitAddon } from 'https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/+esm';
@@ -145,265 +87,56 @@
     const baseSid = sid || defaultBoardId || 'default';
     const baseKey = embedId || baseSid;
     
-    // Settings key strategy:
-    // - Base settings stored in: terminal-settings-{baseKey}
-    // - Named session settings stored in: terminal-settings-{baseKey}-{sessionName}
-    // This means: same session name = same settings (intentional - same terminal)
-    //             different session name = different settings (different terminal)
-    
-    function getSettingsKeyForSession(sessionName) {
-      if (sessionName && sessionName.trim()) {
-        return `terminal-settings-${baseKey}-${sessionName.trim()}`;
-      }
-      return `terminal-settings-${baseKey}`;
-    }
-    
-    // Load settings - check window.name first (persists per-iframe across refresh)
-    function loadSettingsWithSessionKey() {
-      let sessionName = '';
-      
-      // Check window.name for our session (survives refresh, unique per iframe)
-      if (window.name && window.name.startsWith('terminal:')) {
-        sessionName = window.name.substring('terminal:'.length);
-        console.log('Found session in window.name:', sessionName);
-      }
-      
-      // If we have a session name, try to load session-specific settings
-      if (sessionName) {
-        const sessionKey = getSettingsKeyForSession(sessionName);
-        try {
-          const sessionData = localStorage.getItem(sessionKey);
-          if (sessionData) {
-            console.log('Loaded session-specific settings from:', sessionKey);
-            return { settings: JSON.parse(sessionData), key: sessionKey };
-          }
-        } catch (e) {
-          console.warn('Failed to load session settings:', e);
-        }
-      }
-      
-      // Fall back to base settings
-      try {
-        const baseData = localStorage.getItem(`terminal-settings-${baseKey}`);
-        if (baseData) {
-          const baseSettings = JSON.parse(baseData);
-          // If base has a session name and we didn't have one in window.name,
-          // try loading that session's settings
-          if (baseSettings.sessionName && !sessionName) {
-            const sessionKey = getSettingsKeyForSession(baseSettings.sessionName);
-            const sessionData = localStorage.getItem(sessionKey);
-            if (sessionData) {
-              // Store in window.name for future refreshes
-              window.name = `terminal:${baseSettings.sessionName}`;
-              return { settings: JSON.parse(sessionData), key: sessionKey };
-            }
-          }
-          return { settings: baseSettings, key: `terminal-settings-${baseKey}` };
-        }
-      } catch (e) {
-        console.warn('Failed to load base settings:', e);
-      }
-      
-      // Fall back to defaults
-      return {
-        settings: {
-          sessionName: '',
-          cwd: '',
-          boardUrl: defaultBoardId ? `https://miro.com/app/board/${defaultBoardId}/` : '',
-          boardName: defaultBoardName,
-          boardId: defaultBoardId
-        },
-        key: `terminal-settings-${baseKey}`
-      };
-    }
-    
-    // Initial load
-    const initialLoad = loadSettingsWithSessionKey();
-    let currentSettings = initialLoad.settings;
-    let SETTINGS_KEY = initialLoad.key;
+    /**
+     * Everything this terminal knows about itself comes from its URL, which the
+     * spawner built and the board now stores. There is no local settings state
+     * and nothing to persist.
+     *
+     * A settings panel used to live here — session name, working directory,
+     * board URL, board name — backed by per-session localStorage and
+     * window.name. It predates the spawner and the relay, and by the end every
+     * field was either owned elsewhere or actively misleading: the board fields
+     * could only make correct values wrong, and a working directory cannot move
+     * a running shell.
+     *
+     * Renaming a session was worse than useless. It computed a DIFFERENT
+     * session id (baseSid + "-" + name) and reconnected to that, while the
+     * board widget kept the original — so the change reverted on the next
+     * reload, and in the meantime the spawner, the terminal, the relay and the
+     * bridge were each looking at a different session. A named terminal created
+     * one session in the spawner and then quietly connected to a second.
+     *
+     * So the session id is now exactly what the board says it is, and a name is
+     * only a label.
+     */
+    const currentSettings = {
+      sessionName: params.get('name') || '',
+      cwd: params.get('cwd') || '',
+      boardId: defaultBoardId,
+      boardName: defaultBoardName,
+      boardUrl: defaultBoardId ? `https://miro.com/app/board/${defaultBoardId}/` : '',
+    };
 
-    // Apply embed URL params when present (terminal created with ?name=...&cwd=... from Miro)
-    const urlSessionName = params.get('name');
-    const urlCwd = params.get('cwd');
-    if ((urlSessionName !== null && urlSessionName !== '') || (urlCwd !== null && urlCwd !== '')) {
-      if (urlSessionName !== null && urlSessionName !== '') currentSettings.sessionName = urlSessionName;
-      if (urlCwd !== null && urlCwd !== '') currentSettings.cwd = urlCwd;
-      SETTINGS_KEY = getSettingsKeyForSession(currentSettings.sessionName);
-      try {
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentSettings));
-        window.name = `terminal:${currentSettings.sessionName || ''}`;
-        console.log('Applied embed URL params: sessionName=', currentSettings.sessionName, 'cwd=', currentSettings.cwd);
-      } catch (e) { console.warn('Failed to persist URL params:', e); }
-    }
-
-    // Compute effective session ID based on session name
-    function getEffectiveSessionId(sessionName) {
-      if (sessionName && sessionName.trim()) {
-        return `${baseSid}-${sessionName.trim()}`;
-      }
-      return baseSid;
-    }
-
-    // Save settings to localStorage (uses session-specific key)
-    function saveSettings(settings, sessionName) {
-      try {
-        // Save to session-specific key
-        const key = getSettingsKeyForSession(sessionName);
-        localStorage.setItem(key, JSON.stringify(settings));
-        SETTINGS_KEY = key;
-        
-        // Store session name in window.name (persists across refresh, unique per iframe!)
-        window.name = `terminal:${sessionName || ''}`;
-        
-        console.log('Saved settings to:', key, 'window.name:', window.name);
-      } catch (e) {
-        console.warn('Failed to save settings:', e);
-      }
-    }
-
-    // Extract board ID from Miro URL
-    function extractBoardId(url) {
-      const match = url.match(/miro\.com\/app\/board\/([^\/\?]+)/);
-      return match ? match[1] : '';
-    }
-    
-    // Current effective session ID
-    let currentEffectiveSid = getEffectiveSessionId(currentSettings.sessionName);
+    const currentEffectiveSid = baseSid;
 
     // Status elements
     const statusIndicator = document.getElementById('status-indicator');
     const statusText = document.getElementById('status-text');
 
-    // Settings panel elements
-    const settingsBtn = document.getElementById('settings-btn');
-    const settingsPanel = document.getElementById('settings-panel');
-    const settingsClose = document.getElementById('settings-close');
-    const settingsSessionName = document.getElementById('settings-session-name');
-    const settingsCwd = document.getElementById('settings-cwd');
-    const settingsBoardUrl = document.getElementById('settings-board-url');
-    const settingsBoardName = document.getElementById('settings-board-name');
-    const settingsSave = document.getElementById('settings-save');
-    const settingsReset = document.getElementById('settings-reset');
-    const currentSessionIdDisplay = document.getElementById('current-session-id');
-
-    // Reconnect callback - will be set by connectToSession
-    let reconnectWithNewSession = null;
-
-    // Update session ID display
-    function updateSessionIdDisplay() {
-      if (currentSessionIdDisplay) {
-        currentSessionIdDisplay.textContent = currentEffectiveSid;
-      }
-    }
-
-    // Settings panel handlers
-    function openSettings() {
-      settingsSessionName.value = currentSettings.sessionName || '';
-      settingsCwd.value = currentSettings.cwd || '';
-      settingsBoardUrl.value = currentSettings.boardUrl || '';
-      settingsBoardName.value = currentSettings.boardName || '';
-      updateSessionIdDisplay();
-      settingsPanel.classList.remove('hidden');
-    }
-
-    function closeSettings() {
-      settingsPanel.classList.add('hidden');
-    }
-
-    function handleSaveSettings() {
-      const newSessionName = settingsSessionName.value.trim();
-      const newCwd = settingsCwd.value.trim();
-      const boardUrl = settingsBoardUrl.value.trim();
-      const boardId = extractBoardId(boardUrl) || boardUrl; // Allow raw ID too
-      
-      const oldSessionName = currentSettings.sessionName;
-      
-      currentSettings = {
-        sessionName: newSessionName,
-        cwd: newCwd,
-        boardUrl: boardUrl,
-        boardName: settingsBoardName.value.trim(),
-        boardId: boardId
-      };
-      
-      // Save to session-specific key (based on new session name)
-      saveSettings(currentSettings, newSessionName);
-      
-      // Check if session changed (name change requires reconnect)
-      const newEffectiveSid = getEffectiveSessionId(newSessionName);
-      if (newEffectiveSid !== currentEffectiveSid) {
-        currentEffectiveSid = newEffectiveSid;
-        console.log('Session changed, reconnecting to:', currentEffectiveSid);
-        
-        // Trigger reconnection with new session (will use new cwd)
-        if (reconnectWithNewSession) {
-          reconnectWithNewSession(currentEffectiveSid);
-        }
-      }
-      
-      closeSettings();
-      console.log('Settings saved:', currentSettings);
-    }
-
-    function handleResetSettings() {
-      // Remove current session-specific settings
-      localStorage.removeItem(SETTINGS_KEY);
-      
-      currentSettings = {
-        sessionName: '',
-        cwd: '',
-        boardUrl: defaultBoardId ? `https://miro.com/app/board/${defaultBoardId}/` : '',
-        boardName: defaultBoardName,
-        boardId: defaultBoardId
-      };
-      
-      // Reset the settings key to base
-      SETTINGS_KEY = `terminal-settings-${baseKey}`;
-      
-      settingsSessionName.value = '';
-      settingsCwd.value = '';
-      settingsBoardUrl.value = currentSettings.boardUrl;
-      settingsBoardName.value = currentSettings.boardName;
-      
-      // Update session ID
-      const newEffectiveSid = getEffectiveSessionId('');
-      currentSessionIdDisplay.textContent = newEffectiveSid;
-      
-      console.log('Settings reset to defaults:', currentSettings);
-    }
-
-    // Update session ID preview when typing
-    settingsSessionName?.addEventListener('input', () => {
-      const previewSid = getEffectiveSessionId(settingsSessionName.value.trim());
-      if (currentSessionIdDisplay) {
-        currentSessionIdDisplay.textContent = previewSid;
-      }
-    });
-
-    // Attach settings event listeners
-    settingsBtn.addEventListener('click', openSettings);
-    settingsClose.addEventListener('click', closeSettings);
-    settingsSave.addEventListener('click', handleSaveSettings);
-    settingsReset.addEventListener('click', handleResetSettings);
-    
-    // Close on click outside
-    settingsPanel.addEventListener('click', (e) => {
-      if (e.target === settingsPanel) {
-        closeSettings();
-      }
-    });
-    
-    // Close on Escape key
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !settingsPanel.classList.contains('hidden')) {
-        closeSettings();
-      }
-    });
-
     function setStatus(status, text) {
       statusIndicator.className = status;
       statusText.textContent = text;
     }
+
+    (function showIdentity() {
+      const el = document.getElementById('identity');
+      if (!el) return;
+      const bits = [];
+      if (currentSettings.sessionName) bits.push(currentSettings.sessionName);
+      if (currentSettings.boardName) bits.push(currentSettings.boardName);
+      bits.push(currentEffectiveSid.slice(0, 8));
+      el.textContent = bits.join(' · ');
+    })();
 
     function showError(message) {
       setStatus('error', message);
@@ -917,11 +650,6 @@
           connect();
         });
       }
-
-      // Set up reconnect callback for settings changes
-      reconnectWithNewSession = async (newSessionId) => {
-        await startSession(newSessionId);
-      };
 
       // Start connection
       connect();
