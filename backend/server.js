@@ -13,18 +13,30 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // Configuration
 const PORT = parseInt(process.env.PORT || '3001', 10);
+// Loopback only. This is the single control the whole threat model rests on:
+// the server has no authentication worth the name, and its safety is that it
+// cannot be reached. Overridable for the rare case of a deliberately isolated
+// container, but the default must never be a wildcard bind — `listen(PORT)`
+// with no host binds every interface, which puts a shell on the local network.
+const HOST = process.env.HOST || '127.0.0.1';
 const SSL_KEY_PATH = process.env.SSL_KEY_PATH || '';
 const SSL_CERT_PATH = process.env.SSL_CERT_PATH || '';
-const SIGN_SECRET = process.env.SIGN_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-secret-change-in-production');
+// Signs PTY tokens. There is deliberately no fallback constant: this repo is
+// public, so a default here is a published signing key, and the NODE_ENV guard
+// that was meant to catch that could never fire — nothing starts a local dev
+// tool with NODE_ENV=production, so the constant was the normal path.
+//
+// Generating one per boot costs nothing. A token already outlives neither
+// TOKEN_TTL nor the process, and the PTY sessions it authorises die with the
+// process too, so there is nothing for a stable key to be stable for. Set
+// SIGN_SECRET explicitly only if something outside this process has to verify
+// these tokens.
+const SIGN_SECRET_FROM_ENV = Boolean(process.env.SIGN_SECRET);
+const SIGN_SECRET = process.env.SIGN_SECRET || crypto.randomBytes(32).toString('hex');
 const SESSION_TIMEOUT = parseInt(process.env.SESSION_TIMEOUT || '3600000', 10); // 1 hour default
 const TOKEN_TTL = parseInt(process.env.TOKEN_TTL || '900000', 10); // 15 minutes default
 const ALLOWED_ROOT = process.env.ALLOWED_ROOT || os.homedir();
 const SCROLLBACK_BYTES = parseInt(process.env.SCROLLBACK_BYTES || '204800', 10); // 200 KB default
-
-if (!SIGN_SECRET && process.env.NODE_ENV === 'production') {
-  console.error('SIGN_SECRET is required in production');
-  process.exit(1);
-}
 
 // Sessions map: sid -> { pty, clients[], lastSeen }
 const sessions = new Map();
@@ -58,12 +70,18 @@ function corsAllowOrigin(origin) {
     .map((s) => s.trim())
     .filter(Boolean);
   if (extras.includes(origin)) return true;
+  // Where you published the embed. This used to be a blanket *.github.io rule,
+  // which pre-authorised every GitHub Pages site on the internet against a
+  // server whose only real defence is that it cannot be reached. EMBED_ORIGINS
+  // already names the one Pages origin involved, so reuse it rather than
+  // inventing a second setting. Defined further down; this function only ever
+  // runs while handling a request, long after module load.
+  if (EMBED_ORIGINS.includes(origin)) return true;
   try {
     const { hostname } = new URL(origin);
     if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
     if (hostname === '127.0.0.1' || hostname === '[::1]') return true;
     if (hostname === 'miro.com' || hostname.endsWith('.miro.com')) return true;
-    if (hostname === 'github.io' || hostname.endsWith('.github.io')) return true;
   } catch {
     return false;
   }
@@ -75,14 +93,12 @@ app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && corsAllowOrigin(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
-    // Chrome's Private Network Access (PNA): a page loaded from a public
-    // origin (e.g. the github.io wrapper) needs this on top of normal CORS
-    // to be allowed to fetch a loopback/private address like localhost —
-    // regular Access-Control-Allow-Origin alone isn't enough. Without it,
-    // Chrome blocks the request itself with "Permission was denied ... to
-    // access the `loopback` address space" before this server even sees it
-    // as a CORS failure.
-    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    // The Access-Control-Allow-Private-Network header used to be set here, from
+    // the era when Private Network Access treated it as the grant that let a
+    // public page reach loopback. Local Network Access replaced that: the
+    // permission is no longer something a server can hand out, and no public
+    // page here is supposed to reach this server anyway. All the header did was
+    // volunteer consent on browsers still honouring the old behaviour.
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -138,8 +154,11 @@ function generateSid() {
 }
 
 function safeJoin(root, userPath) {
-  const resolved = path.resolve(root, userPath);
-  if (!resolved.startsWith(path.resolve(root))) {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(resolvedRoot, userPath);
+  // Compare on a path boundary, not a string prefix: "/Users/alice-backup"
+  // starts with "/Users/alice" but is not inside it.
+  if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
     throw new Error('Path traversal detected');
   }
   return resolved;
@@ -174,10 +193,15 @@ function verifyToken(sid, token) {
   hmac.update(payload);
   const expectedSignature = hmac.digest('hex');
   
-  return crypto.timingSafeEqual(
-    Buffer.from(signature, 'hex'),
-    Buffer.from(expectedSignature, 'hex')
-  );
+  // Compare as fixed-length buffers. timingSafeEqual throws on a length
+  // mismatch, and a hex string with junk in it decodes short — so an
+  // attacker-supplied token could raise instead of returning false. On the
+  // WebSocket upgrade path nothing catches that, which made a single
+  // unauthenticated request enough to kill the process and every live PTY.
+  const given = Buffer.from(signature, 'hex');
+  const expected = Buffer.from(expectedSignature, 'hex');
+  if (given.length !== expected.length) return false;
+  return crypto.timingSafeEqual(given, expected);
 }
 
 function getShell() {
@@ -207,12 +231,18 @@ function createSession(sid, cwd, name) {
   const shell = getShell();
   const workingDir = getCwd(cwd);
   
+  // The shell gets the server's environment minus this server's own secrets.
+  // Terminal output is written to board metadata, and `env` is a thing people
+  // run, so anything here is one command away from being shared board content.
+  const ptyEnv = Object.assign({}, process.env);
+  delete ptyEnv.SIGN_SECRET;
+
   const ptyProcess = pty.spawn(shell, [], {
     name: name || 'xterm-color',
     cols: 80,
     rows: 24,
     cwd: workingDir,
-    env: process.env
+    env: ptyEnv
   });
   
   const session = {
@@ -302,6 +332,34 @@ app.post('/api/pty/start', (req, res) => {
     sid,
     token,
     url: `/terminal.html?sid=${encodeURIComponent(sid)}&token=${encodeURIComponent(token)}`,
+    wsUrl: `${wsProtocol}://${host}/pty?sid=${encodeURIComponent(sid)}&token=${encodeURIComponent(token)}`
+  });
+});
+
+// Attach to a session that already exists, and only that. This is what the
+// relay calls; it deliberately cannot reach /api/pty/start.
+//
+// The difference is the whole of the fix. /api/pty/start creates a session for
+// whatever id it is handed, so a frame asking the relay to open an id nobody
+// had ever seen was answered with a brand new shell, in a working directory it
+// also chose. Nothing had to be guessed, and no prior knowledge of the board
+// was needed. Here an unknown id is an error, so the set of sessions a frame
+// can reach is exactly the set someone already created at this machine.
+app.post('/api/pty/:sid/attach', (req, res) => {
+  const { sid } = req.params;
+  const session = sessions.get(sid);
+  if (!session) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  session.lastSeen = Date.now();
+  const token = createToken(sid);
+  const wsProtocol = req.secure ? 'wss' : 'ws';
+  const host = req.get('host');
+
+  res.json({
+    sid,
+    token,
     wsUrl: `${wsProtocol}://${host}/pty?sid=${encodeURIComponent(sid)}&token=${encodeURIComponent(token)}`
   });
 });
@@ -470,10 +528,17 @@ app.post('/api/context/:embedId/request', (req, res) => {
 // Which origins may ask the relay to open a PTY session — i.e. where you
 // published the embed.
 //
-// This lives in .env rather than on the relay app's App URL because Miro
-// normalises sdkUri and drops query parameters from it: a configured
-// ?embedOrigins=... simply does not arrive, and the relay frame loads with only
-// Miro's own _miro and _sdk params. Confirmed by inspecting the frame.
+// This lives in .env rather than on the relay app's App URL. The original
+// reason given here was that Miro normalises sdkUri and drops query parameters
+// from it. That was measured wrong on 18 Sep 2026: the relay frame loads with
+// ?embedOrigins=... present and intact. The earlier observation was a stale
+// cached frame, not Miro dropping anything.
+//
+// So .env is a preference now, not a constraint, and a weak one: this server
+// makes no use of the value beyond handing it back on /api/relay-config below.
+// Reading it from the sdkUri instead would drop this variable, that endpoint,
+// and the restart step that is the most common way a first run goes wrong.
+// Not changed here because it is a design call, not a bug fix.
 //
 // No default. Opening a session is what yields the nonce that authorises
 // keystrokes, so an unset value means live mode does not work — a closed door
@@ -608,10 +673,23 @@ wss.on('connection', (ws, request, sid) => {
 });
 
 // Start server
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const scheme = useHttps ? 'https' : 'http';
   const wsScheme = useHttps ? 'wss' : 'ws';
   console.log(`Terminal server running on ${scheme}://localhost:${PORT}`);
+  if (!SIGN_SECRET_FROM_ENV) {
+    console.log('Signing key generated for this run. Tokens do not survive a restart,'
+      + ' which is fine, because neither do the sessions they authorise.');
+  }
+  if (HOST !== '127.0.0.1' && HOST !== '::1' && HOST !== 'localhost') {
+    console.warn(`WARNING: bound to ${HOST}, not loopback. This server has no`
+      + ' authentication; anything that can reach it gets a shell. See SECURITY.md.');
+  }
+  if (!useHttps) {
+    console.warn('WARNING: running without TLS. Set SSL_KEY_PATH and SSL_CERT_PATH'
+      + ' (see README "Requirements") — board modals cannot render a cert warning,'
+      + ' so an untrusted or absent cert looks like a server that is not running.');
+  }
   console.log(`WebSocket endpoint: ${wsScheme}://localhost:${PORT}/pty`);
   console.log(`Session timeout: ${SESSION_TIMEOUT}ms`);
 });

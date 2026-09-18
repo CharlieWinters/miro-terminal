@@ -186,27 +186,28 @@
   // Exact origins only, never '*' — a wildcard would hand this message to every
   // other frame on the board, including other apps' iframes.
   //
-  // The URL's appOrigins is stamped into each embed AT CREATION TIME and then
-  // frozen in board content, so an embed made before the app moved origin still
-  // names the old one. Rather than have every existing terminal go dark on the
-  // day the app is published, the known origins are always tried as well. The
-  // cost of an extra candidate is one ignored postMessage.
   // location.origin is the load-bearing one and needs no configuring: the app
   // and this wrapper are published to the SAME origin, so wherever this page
-  // came from is where the app is too. That makes a fork work untouched.
-  // The localhost entries cover a dev server, and anything in the URL's
-  // appOrigins (stamped at embed creation) is added on top.
-  var KNOWN_APP_ORIGINS = [
+  // came from is where the app is too. That makes a fork work untouched, and
+  // the localhost entries cover a dev server.
+  //
+  // The URL's appOrigins used to be merged in on top of these. It is now
+  // ignored. This page's URL is board content, so that parameter let anyone
+  // with edit access nominate their own origin as the app — and be answered
+  // with the terminal's history. Demonstrated against a running terminal, not
+  // theorised. Nothing legitimate needed it: the app has always been at this
+  // page's own origin.
+  //
+  // The exception is hosting the app and this wrapper on unrelated origins via
+  // VITE_WRAPPER_URL. That now needs the app's origin added to this list at
+  // build time rather than passed per embed. Deliberate: a build input is not
+  // something a board editor can rewrite.
+  var appOrigins = [
     window.location.origin,
     'http://localhost:5173',
     'https://localhost:5173',
     'http://localhost:4173'
   ];
-  var appOrigins = (params.get('appOrigins') || '')
-    .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-  KNOWN_APP_ORIGINS.forEach(function (o) {
-    if (appOrigins.indexOf(o) === -1) appOrigins.push(o);
-  });
 
   var MSG = {
     hello: 'mt:hello', state: 'mt:state', openDev: 'mt:open-dev',
@@ -291,12 +292,10 @@
     if (sessionName) url.searchParams.set('name', sessionName);
     if (params.get('boardId')) url.searchParams.set('boardId', params.get('boardId'));
     if (params.get('boardName')) url.searchParams.set('boardName', params.get('boardName'));
-    url.searchParams.set('appOrigins', appOrigins.join(','));
-    // Where to find the relay: it is served BY the terminal server, so the
-    // relay's origin is the backend's origin.
-    try {
-      url.searchParams.set('relayOrigins', new URL(state.terminalBase).origin);
-    } catch (e) {}
+    // Neither appOrigins nor relayOrigins is passed any more. The terminal
+    // derives both: the app is at its own origin, and the relay is whichever
+    // loopback origin answers. Passing them achieved nothing except to put two
+    // security-relevant allowlists into a URL that is board content.
     return url.toString();
   }
 

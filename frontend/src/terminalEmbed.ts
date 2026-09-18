@@ -64,10 +64,17 @@ interface ConnectedContext {
 /** Map of embedId → Miro widget ID for looking up which embed sent a message */
 const embedIdToWidgetId = new Map<string, string>();
 
-let contextRefreshInterval: ReturnType<typeof setInterval> | null = null;
-const CONTEXT_REFRESH_MS = 10_000;
 let contextRequestPollInterval: ReturnType<typeof setInterval> | null = null;
 const CONTEXT_REQUEST_POLL_MS = 2_000;
+
+/** Board identity does not change for the life of this frame, and it was being
+ * re-fetched once per embed per refresh. The SDK bills per call against an
+ * hourly credit budget, so a constant read in a loop is worth caching. */
+let boardInfoCache: { id: string } | null = null;
+async function getBoardInfoCached(): Promise<{ id: string }> {
+  if (!boardInfoCache) boardInfoCache = (await miro.board.getInfo()) as { id: string };
+  return boardInfoCache;
+}
 
 /** One entry per connector attached to the embed, carrying that connector's
  * own caption (the label lives on the line, not the sticky — so the sticky's
@@ -142,9 +149,9 @@ function getReadableText(item: { type: string; content?: string }): string | nul
 async function fetchConnectedContext(widgetId: string): Promise<ConnectedContext> {
   const [connections, boardInfo] = await Promise.all([
     getConnectedItems(widgetId),
-    miro.board.getInfo(),
+    getBoardInfoCached(),
   ]);
-  const boardId = (boardInfo as { id: string }).id;
+  const boardId = boardInfo.id;
 
   const items = connections.length
     ? await miro.board.get({ id: connections.map((c) => c.itemId) })
@@ -193,13 +200,22 @@ async function pushContextToServer(terminalBase: string, embedId: string, widget
 }
 
 async function pollContextRequests(terminalBase: string): Promise<void> {
-  if (embedIdToWidgetId.size === 0) return;
   try {
     const res = await fetch(`${terminalBase}/api/context/requests`);
     if (!res.ok) return;
     const { embedIds } = (await res.json()) as { embedIds: string[] };
-    for (const embId of embedIds || []) {
-      const widId = embedIdToWidgetId.get(embId);
+    if (!embedIds || embedIds.length === 0) return; // nobody asked: no SDK calls at all
+    // An id we have never seen means the map is stale — an embed created in
+    // another session, or by a panel that has since closed. Rediscover once per
+    // tick at most, and only when something actually needs it.
+    let rediscovered = false;
+    for (const embId of embedIds) {
+      let widId = embedIdToWidgetId.get(embId);
+      if (!widId && !rediscovered) {
+        await discoverTerminalEmbeds();
+        rediscovered = true;
+        widId = embedIdToWidgetId.get(embId);
+      }
       if (widId) await pushContextToServer(terminalBase, embId, widId);
     }
   } catch (err) {
@@ -225,10 +241,6 @@ async function discoverTerminalEmbeds(): Promise<void> {
 }
 
 export function stopContextRefresh(): void {
-  if (contextRefreshInterval !== null) {
-    clearInterval(contextRefreshInterval);
-    contextRefreshInterval = null;
-  }
   if (contextRequestPollInterval !== null) {
     clearInterval(contextRequestPollInterval);
     contextRequestPollInterval = null;
@@ -240,16 +252,12 @@ export function stopContextRefresh(): void {
  * this loop restarted. */
 function startContextRefresh(): void {
   stopContextRefresh();
-  contextRefreshInterval = setInterval(async () => {
-    const backend = getBackendConfig();
-    if (!backend) return;
-    await discoverTerminalEmbeds();
-    for (const [embId, widId] of embedIdToWidgetId.entries()) {
-      pushContextToServer(backend.terminalBase, embId, widId).catch((err) =>
-        console.error('[Terminal] Context refresh error:', err)
-      );
-    }
-  }, CONTEXT_REFRESH_MS);
+  // There used to be a second timer here that rebuilt and pushed context for
+  // every embed every 10 seconds, whether or not anything wanted it. With four
+  // terminals on a board that was roughly 9,000 SDK calls an hour per open tab,
+  // which is what exhausted the hourly credit budget. It was also redundant:
+  // the poll below already pushes context, for exactly the embeds that asked,
+  // and it asks the terminal server over plain HTTP rather than the SDK.
   contextRequestPollInterval = setInterval(() => {
     const backend = getBackendConfig();
     if (backend) pollContextRequests(backend.terminalBase);
@@ -272,10 +280,9 @@ export async function initTerminalContextSync(): Promise<void> {
   }
   const backend = getBackendConfig();
   if (!backend) return;
+  // Seed the id map, but do not push for everything: a terminal that wants
+  // context asks for it, and the poll answers within a couple of seconds.
   await discoverTerminalEmbeds();
-  for (const [embId, widId] of embedIdToWidgetId.entries()) {
-    await pushContextToServer(backend.terminalBase, embId, widId);
-  }
   startContextRefresh();
 }
 
@@ -326,11 +333,14 @@ export async function placeTerminalEmbed(
   const boardName = (boardInfo as { id: string; title?: string }).title || boardId;
 
   const embedId = generateEmbedId();
+  // No appOrigins here any more. It went into the embed URL, which is board
+  // content, and the wrapper now ignores it for exactly that reason: the app is
+  // published to the same origin as the wrapper, so naming it achieved nothing
+  // except putting a security-relevant allowlist somewhere editable.
   const extraParams: Record<string, string> = {
     embedId,
     boardId,
     boardName,
-    appOrigins: window.location.origin,
   };
   if (embedOptions?.sessionName) extraParams.name = embedOptions.sessionName;
   if (embedOptions?.cwd) extraParams.cwd = embedOptions.cwd;

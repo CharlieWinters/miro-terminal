@@ -25,8 +25,8 @@
   </p>
   <p id="origins"></p>
   <table>
-    <thead><tr><th>Session</th><th>State</th><th>Frames out</th><th>Frames in</th></tr></thead>
-    <tbody id="rows"><tr><td colspan="4" style="color:#888">no live sessions</td></tr></tbody>
+    <thead><tr><th>Session</th><th>State</th><th>Live mode</th><th>Frames out</th><th>Frames in</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="5" style="color:#888">no live sessions</td></tr></tbody>
   </table>
 
 <script>
@@ -62,17 +62,29 @@
   // Which origins may ask this relay to open a session — i.e. where the embed
   // is published. Fetched from the terminal server, same-origin.
   //
-  // It lives in backend/.env rather than on this app's App URL because that is
-  // the one place nothing else rewrites, and because it survives the App URL
-  // being changed. (An earlier version read it from a query parameter on the
-  // sdkUri and appeared not to receive it; that may well have been a stale
-  // frame rather than Miro dropping it. Either way .env is the better home for
-  // something the server also needs to know.)
+  // Read from this app's own URL first, then from the terminal server.
+  //
+  // The sdkUri query parameter does arrive — measured 18 Sep 2026, correcting
+  // an earlier note here that guessed it might be a stale frame rather than
+  // Miro dropping it. It was a stale frame. That matters because the .env route
+  // costs a file edit and a server restart, and an unrestarted server is the
+  // single most common way a first run goes wrong.
+  //
+  // The server is still consulted, so existing .env setups keep working. Once
+  // nothing depends on that, /api/relay-config can go: it is an unauthenticated
+  // endpoint that exists only to carry this one value.
   var ALLOWED_EMBED_ORIGINS = [
     'http://localhost:5173',
     'https://localhost:5173',
     'http://localhost:4173'
   ];
+  (new URLSearchParams(location.search).get('embedOrigins') || '')
+    .split(',')
+    .map(function (o) { return o.trim().replace(/\/$/, ''); })
+    .filter(Boolean)
+    .forEach(function (o) {
+      if (ALLOWED_EMBED_ORIGINS.indexOf(o) === -1) ALLOWED_EMBED_ORIGINS.push(o);
+    });
   var M = {
     open: 'mt-relay:open',
     ready: 'mt-relay:ready',
@@ -86,21 +98,97 @@
   // sid -> { ws, nonce, embedId, out, in, state, source, origin }
   var sessions = {};
 
+  /**
+   * Which sessions this machine has agreed to expose to the board, per session.
+   *
+   * The relay cannot tell one frame on a board page from another — a
+   * cross-origin frame has no identity beyond its origin, and every embed
+   * shares one, so there is no cryptographic way to bind a request to the
+   * widget it claims to come from. Rather than pretend otherwise, the decision
+   * is handed to the one party who can actually make it: the person at the
+   * machine whose shell it is.
+   *
+   * Kept in sessionStorage rather than memory because Miro resets offscreen app
+   * iframes constantly, and re-asking on every reload would train the answer
+   * out of anyone. One decision per session, per browser session; closing the
+   * tab forgets it, and Revoke on this page forgets it now.
+   */
+  var APPROVAL_KEY = 'mt-relay-approved';
+  function approvedSids() {
+    try { return JSON.parse(sessionStorage.getItem(APPROVAL_KEY) || '[]'); }
+    catch (e) { return []; }
+  }
+  function isApproved(sid) { return approvedSids().indexOf(sid) !== -1; }
+  function setApproved(sid, yes) {
+    var list = approvedSids().filter(function (x) { return x !== sid; });
+    if (yes) list.push(sid);
+    try { sessionStorage.setItem(APPROVAL_KEY, JSON.stringify(list)); } catch (e) {}
+    render();
+  }
+
+  /** Asked once per session. A native dialog on purpose: it is drawn by the
+   * browser, names the origin asking, and cannot be dressed up by anything on
+   * the board. Denial is remembered for this attempt only, so a mistaken no is
+   * one reload away from being asked again. */
+  var denied = {};
+  function approve(sid, embedId, origin) {
+    if (isApproved(sid)) return true;
+    if (denied[sid]) return false;
+    var ok = window.confirm(
+      'A terminal on this board is asking to go live.\n\n' +
+      'Session: ' + sid.slice(0, 12) + '\n' +
+      'Embed: ' + (embedId || 'unnamed') + '\n' +
+      'Asked by: ' + origin + '\n\n' +
+      'Allowing this lets that page send keystrokes to this shell until you ' +
+      'close this tab or revoke it on the relay page.\n\n' +
+      'Allow?'
+    );
+    if (ok) setApproved(sid, true); else denied[sid] = true;
+    return ok;
+  }
+
+  window.mtRevoke = function (sid) {
+    setApproved(sid, false);
+    var s = sessions[sid];
+    if (s) {
+      s.stale = true;
+      try { s.ws.close(); } catch (e) {}
+      delete sessions[sid];
+    }
+    render();
+  };
+
   function render() {
     var tb = document.getElementById('rows');
+    // Approved-but-idle sessions are listed too. An empty table has to mean
+    // "nothing is exposed", so anything still carrying permission belongs here
+    // whether or not a socket happens to be open right now.
     var keys = Object.keys(sessions);
+    approvedSids().forEach(function (sid) {
+      if (keys.indexOf(sid) === -1) keys.push(sid);
+    });
     if (!keys.length) {
-      tb.innerHTML = '<tr><td colspan="4" style="color:#888">no live sessions</td></tr>';
+      tb.innerHTML = '<tr><td colspan="5" style="color:#888">no live sessions</td></tr>';
       return;
     }
     tb.innerHTML = '';
     keys.forEach(function (sid) {
-      var s = sessions[sid];
+      var s = sessions[sid] || { state: 'idle', out: 0, inbound: 0 };
+      var ok = isApproved(sid);
       var tr = document.createElement('tr');
       tr.innerHTML =
         '<td>' + sid.slice(0, 10) + '…</td>' +
         '<td class="' + (s.state === 'open' ? 'ok' : 'bad') + '">' + s.state + '</td>' +
+        '<td class="' + (ok ? 'ok' : 'bad') + '">' + (ok ? 'allowed' : 'not allowed') + '</td>' +
         '<td>' + s.out + '</td><td>' + s.inbound + '</td>';
+      if (ok) {
+        var td = tr.lastChild;
+        var btn = document.createElement('button');
+        btn.textContent = 'Revoke';
+        btn.onclick = function () { window.mtRevoke(sid); };
+        td.appendChild(document.createTextNode(' '));
+        td.appendChild(btn);
+      }
       tb.appendChild(tr);
     });
   }
@@ -122,7 +210,13 @@
    * PTY survives on the server and replays its scrollback on connect, so a
    * reconnecting embed gets a correct screen rather than a partial one.
    */
-  async function openSession(sid, embedId, cwd, source, origin) {
+  async function openSession(sid, embedId, source, origin) {
+    // Ask the person at the machine, before anything else happens. Nothing
+    // below this line is reached for a session they have not agreed to.
+    if (!approve(sid, embedId, origin)) {
+      throw new Error('the person at this machine has not allowed live mode for this session');
+    }
+
     var existing = sessions[sid];
 
     // Already up for this same embed frame: re-announce and stop.
@@ -156,27 +250,25 @@
       }
     }
 
-    // Did this session still exist, or is /api/pty/start about to create a new
-    // one under the same id? The terminal says so either way, because a fresh
-    // prompt where there used to be work reads as lost work unless something
-    // explains it.
-    var existed = false;
-    try {
-      var check = await fetch('/api/pty/' + encodeURIComponent(sid));
-      if (check.ok) existed = Boolean((await check.json()).exists);
-    } catch (e) {
-      /* treat as unknown; the worst case is a notice that was not needed */
-    }
-
-    var body = { sid: sid };
-    if (cwd) body.cwd = cwd;
-    var res = await fetch('/api/pty/start', {
+    // Attach, never create. This used to call /api/pty/start, which creates a
+    // session for whatever id it is given — so asking for an id nobody had ever
+    // seen produced a new shell rather than an error, and the caller chose its
+    // working directory too. The attach endpoint refuses an unknown id, so the
+    // sessions reachable from the board are exactly those already started here.
+    //
+    // cwd is no longer forwarded, and is no longer meaningful: nothing is being
+    // created, so there is nothing to set a directory on.
+    var res = await fetch('/api/pty/' + encodeURIComponent(sid) + '/attach', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      headers: { 'Content-Type': 'application/json' }
     });
+    if (res.status === 404) {
+      throw new Error('no such session on this machine — create it from the spawner first');
+    }
     if (!res.ok) throw new Error('terminal server refused: ' + res.status);
     var session = await res.json();
+    // The session was already running; that is now the only case there is.
+    var existed = true;
 
     // A nonce, not the token, is what the embed gets — and it is handed over by
     // postMessage rather than through any URL, so it never touches board
@@ -230,9 +322,14 @@
     var d = event.data;
     if (!d || typeof d !== 'object') return;
     if (d.type !== M.open && d.type !== M.frame && d.type !== M.hello && d.type !== M.close) return;
-    // An opaque-origin (sandboxed) embed arrives as "null" and is allowed
-    // through; the nonce below is what actually authorises anything privileged.
-    if (event.origin !== 'null' && ALLOWED_EMBED_ORIGINS.indexOf(event.origin) === -1) {
+    // No carve-out for an opaque origin. This used to let "null" straight
+    // through on the belief that a real embed is sandboxed and arrives that
+    // way. Measured on 18 Sep 2026: Miro renders the embed iframe with
+    // allow-same-origin, so a genuine embed reports the origin it is served
+    // from and matches the list below like anything else. The carve-out was
+    // therefore not serving any legitimate caller, while letting any page that
+    // sandboxes itself skip the check entirely — which is free to do.
+    if (ALLOWED_EMBED_ORIGINS.indexOf(event.origin) === -1) {
       console.warn('[relay] ignoring message from', event.origin);
       // Say so, rather than going quiet. An unlisted origin is far and away the
       // most likely first-run mistake, and silence makes it indistinguishable
@@ -249,7 +346,8 @@
           origin: event.origin,
           accepting: ALLOWED_EMBED_ORIGINS,
           reason: 'The terminal relay does not accept embeds from ' + event.origin +
-                  '. Set EMBED_ORIGINS=' + event.origin +
+                  '. Add ?embedOrigins=' + event.origin +
+                  " to the relay app's App URL, or set EMBED_ORIGINS=" + event.origin +
                   ' in backend/.env and restart the terminal server.'
         }, event.origin);
       } catch (e) {
@@ -259,8 +357,7 @@
     }
 
     if (d.type === M.hello) {
-      post(event.source, event.origin === 'null' ? '*' : event.origin,
-           { type: M.hello, v: 1, relayOrigin: location.origin });
+      post(event.source, event.origin, { type: M.hello, v: 1, relayOrigin: location.origin });
       return;
     }
 
@@ -280,10 +377,15 @@
 
     if (d.type === M.open) {
       if (!d.sid) return;
-      openSession(d.sid, d.embedId || '', d.cwd, event.source,
-                  event.origin === 'null' ? '*' : event.origin)
+      // Exact target origin, never a wildcard. The reply to an `open` carries
+      // the nonce that authorises keystrokes, and the only reason it was ever
+      // wildcarded was to reach a caller whose origin read as "null".
+      // d.cwd is ignored, and no longer read: the relay cannot create a
+      // session, so a working directory from a board frame has nothing to act
+      // on and no business being honoured.
+      openSession(d.sid, d.embedId || '', event.source, event.origin)
         .catch(function (err) {
-          post(event.source, event.origin === 'null' ? '*' : event.origin,
+          post(event.source, event.origin,
                { type: M.closed, v: 1, embedId: d.embedId, sid: d.sid, error: err.message });
         });
       return;
@@ -306,7 +408,8 @@
 
   // Announce to every frame on the page, so an embed that loaded before this
   // iframe did stops waiting. Embeds also retry, which is the path that has to
-  // work — an exact target origin can never match a sandboxed embed's "null".
+  // work. (This used to say an exact target origin can never match a sandboxed
+  // embed's "null". Measured false: embeds are not opaque-origin here.)
   function announce() {
     var targets = [];
     (function collect(win, depth) {
@@ -337,7 +440,8 @@
     });
     el.textContent = published.length
       ? 'Accepting embeds from: ' + ALLOWED_EMBED_ORIGINS.join(', ')
-      : 'No published embed origin configured — set EMBED_ORIGINS in backend/.env ' +
+      : 'No published embed origin configured — add ?embedOrigins=https://you.github.io '
+        + 'to this app\'s App URL, or set EMBED_ORIGINS in backend/.env ' +
         'and restart the server, or live terminals cannot connect.';
     el.className = published.length ? '' : 'bad';
   }
