@@ -55,6 +55,11 @@
       gap: 1rem; margin-bottom: .4rem; font-size: .78rem; color: var(--muted);
     }
     #history {
+      /* contain stops a scroll that reaches the end of this box from chaining
+         outward; the wheel handler in script is what stops Miro treating the
+         event as a zoom. Both are needed — one governs the scroll, the other
+         the event. */
+      overscroll-behavior: contain;
       margin: 0; padding: .8rem .9rem; max-height: 18rem; overflow: auto;
       background: #0b1016; border: 1px solid var(--border); border-radius: 8px;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -345,13 +350,43 @@
     document.getElementById('strip-title').textContent = opts.title;
     document.getElementById('strip-meta').textContent = opts.meta || '';
     document.getElementById('strip').title = opts.detail || '';
-    // With the toggle bar showing, put the status there rather than adding a
-    // second bar beneath it.
+    // With the toggle bar showing, the mode is already stated by the toggle —
+    // so only the session name goes in the note. Repeating "History" next to a
+    // control that says History is just noise.
     if (rootEl.classList.contains('can-live')) {
-      noteEl.textContent = opts.title + (opts.meta ? ' · ' + opts.meta : '');
+      noteEl.textContent = opts.meta || '';
       noteEl.title = opts.detail || '';
     }
   }
+
+  /**
+   * Scrolling over the history should scroll the history, not zoom the board.
+   *
+   * Miro treats a wheel event over an embed as a canvas zoom, which is right
+   * for a picture and wrong for something with its own scrollback — the live
+   * terminal already behaves correctly because xterm consumes the event, and
+   * the history view should match rather than being the odd one out.
+   *
+   * So the event is consumed here and applied to the history box directly.
+   * Handled in a non-passive listener because preventDefault is the whole
+   * point, and applied manually rather than relying on native scrolling so
+   * that the event is consumed even at the top or bottom of the box, where
+   * native scrolling would decline it and let Miro zoom instead.
+   */
+  function captureWheel() {
+    var box = document.getElementById('history');
+    if (!box) return;
+    box.addEventListener(
+      'wheel',
+      function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        box.scrollTop += event.deltaY;
+      },
+      { passive: false }
+    );
+  }
+  captureWheel();
 
   function showError(msg) {
     errEl.hidden = false;
