@@ -258,15 +258,48 @@
     //
     // cwd is no longer forwarded, and is no longer meaningful: nothing is being
     // created, so there is nothing to set a directory on.
-    var res = await fetch('/api/pty/' + encodeURIComponent(sid) + '/attach', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    if (res.status === 404) {
-      throw new Error('no such session on this machine — create it from the spawner first');
+    // Claim the slot BEFORE the first await, not after the socket exists.
+    //
+    // The three guards above read sessions[sid], and this entry used to be
+    // assigned only once the socket had been built — so every `open` that
+    // arrived while the fetch below was in flight saw nothing, passed all three
+    // guards, and opened a socket of its own. The embed retries `open` until it
+    // sees `ready`, so that window was hit routinely: sockets accumulated
+    // against one PTY, every one of them replaying scrollback and echoing input.
+    //
+    // The approval prompt made it far worse. confirm() blocks the event loop,
+    // so a burst of retries piles up behind it and releases together the moment
+    // the dialog is dismissed. Reserving synchronously is what closes the
+    // window: the next caller in that burst sees state 'connecting' for its own
+    // source and returns.
+    var entry = {
+      ws: null, nonce: null, embedId: embedId, out: 0, inbound: 0,
+      state: 'connecting', source: source, origin: origin
+    };
+    sessions[sid] = entry;
+    render();
+
+    var session;
+    try {
+      var res = await fetch('/api/pty/' + encodeURIComponent(sid) + '/attach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.status === 404) {
+        throw new Error('no such session on this machine — create it from the spawner first');
+      }
+      if (!res.ok) throw new Error('terminal server refused: ' + res.status);
+      session = await res.json();
+    } catch (err) {
+      // Give the reservation back, or a failed attach would block every later
+      // attempt behind a 'connecting' entry that will never resolve.
+      if (sessions[sid] === entry) { delete sessions[sid]; render(); }
+      throw err;
     }
-    if (!res.ok) throw new Error('terminal server refused: ' + res.status);
-    var session = await res.json();
+
+    // Superseded while the fetch was in flight.
+    if (entry.stale || sessions[sid] !== entry) return;
+
     // The session was already running; that is now the only case there is.
     var existed = true;
 
@@ -275,12 +308,8 @@
     // content. Re-issued on every open, since embeds reload.
     var nonce = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
     var ws = new WebSocket(session.wsUrl);
-
-    var entry = {
-      ws: ws, nonce: nonce, embedId: embedId, out: 0, inbound: 0,
-      state: 'connecting', source: source, origin: origin
-    };
-    sessions[sid] = entry;
+    entry.nonce = nonce;
+    entry.ws = ws;
     render();
 
     ws.onopen = function () {
