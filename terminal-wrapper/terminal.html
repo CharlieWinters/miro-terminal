@@ -366,9 +366,15 @@
       // Wildcard to ask, allowlist to listen — see onMessage. Posting with an
       // exact target origin to every frame logs a console error for each frame
       // that does not match, and a board with several apps installed buries the
-      // real errors under hundreds of them. Nothing outbound here is secret: a
-      // sid and an embedId, both already board content. The nonce travels the
-      // other way, and a reply is ignored unless its origin is allowlisted.
+      // real errors under hundreds of them.
+      //
+      // Note what this path actually carries, because it is not only discovery:
+      // `mt-relay:frame` and `mt-relay:close` both go through here and both
+      // carry the nonce. They are safe today only because a nonce cannot exist
+      // before `ready`, and `ready` is what sets relayWindow — so by the time
+      // anything secret is sent, the exact-origin branch above is taken and the
+      // wildcard below is unreachable. That is an ordering accident, not a
+      // guarantee. If you add a caller here, check which branch it can hit.
       function post(message) {
         if (relayWindow && relayOrigin) {
           try { relayWindow.postMessage(message, relayOrigin); } catch (e) {}
