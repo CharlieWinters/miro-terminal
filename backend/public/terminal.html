@@ -44,6 +44,24 @@
 
     // Parse query parameters
     const params = new URLSearchParams(window.location.search);
+
+    /** Loopback means "served by this machine's own terminal server".
+     *
+     * That is a stronger statement than it looks, and two decisions below rest
+     * on it. A board embed can never be on a loopback origin: a public board
+     * page is forbidden from loading one, which is the constraint this whole
+     * app is shaped around. So a page that IS on loopback was opened locally,
+     * and its URL is not board content — nobody with board edit access could
+     * have put it there. */
+    function isLoopbackOrigin(origin) {
+      try {
+        const h = new URL(origin).hostname;
+        return h === 'localhost' || h === '127.0.0.1' || h === '[::1]'
+               || h === '::1' || /\.localhost$/.test(h);
+      } catch (e) { return false; }
+    }
+    const SERVED_LOCALLY = isLoopbackOrigin(window.location.origin);
+
     const sid = params.get('sid');
     const token = params.get('token');
     const cwd = params.get('cwd');
@@ -339,8 +357,14 @@
      * downstream can tell which one it is talking to.
      */
     function createRelayTransport(sessionId, handlers) {
-      var relayOrigins = (params.get('relayOrigins') || '')
-        .split(',').map(function (o) { return o.trim(); }).filter(Boolean);
+      // The relay's origin is no longer read from the URL. This page's URL is
+      // board content when it is an embed, so an origin named there is chosen
+      // by whoever last edited the board — and the relay is the thing holding a
+      // socket onto the shell.
+      //
+      // It does not need naming. The relay must be on loopback; that is the
+      // entire reason it exists, since only a page on this machine may reach
+      // the PTY. See isLoopbackOrigin at the top of this file.
       var nonce = null;
       var relayWindow = null;
       var relayOrigin = null;
@@ -380,13 +404,19 @@
           try { relayWindow.postMessage(message, relayOrigin); } catch (e) {}
           return;
         }
+        // Discovery only below this line. A nonce authorises keystrokes, so it
+        // goes to a known relay or nowhere — never to every frame on the page.
+        // This was previously true only by accident of ordering, because a
+        // nonce cannot exist before the reply that sets relayWindow. Stated
+        // outright now, so a future caller cannot quietly break it.
+        if (message && message.nonce) return;
         targets().forEach(function (win) {
           try { win.postMessage(message, '*'); } catch (e) {}
         });
       }
 
       function onMessage(event) {
-        if (relayOrigins.indexOf(event.origin) === -1) return;
+        if (!isLoopbackOrigin(event.origin)) return;
         var d = event.data;
         if (!d || typeof d !== 'object') return;
         if (d.sid && d.sid !== sessionId) return;
@@ -440,10 +470,6 @@
         kind: 'relay',
         connect() {
           window.addEventListener('message', onMessage);
-          if (!relayOrigins.length) {
-            handlers.onError(new Error('no relayOrigins given, so there is nothing to ask'));
-            return;
-          }
           attempts = 0;
           requestOpen();
           attempts++;
@@ -801,9 +827,39 @@
       // no single surface can hold both a working SDK and access to localhost.
       // Board work belongs on the app origin; PTY work belongs on this machine.
       // -----------------------------------------------------------------------
-      const APP_ORIGINS = (params.get('appOrigins') || 'http://localhost:5173')
-        .split(',').map(function (o) { return o.trim(); }).filter(Boolean);
+      // Which origin counts as "the app" depends on who wrote this page's URL,
+      // and that is exactly what SERVED_LOCALLY tells us.
+      //
+      // Published copy, i.e. an embed: the URL is board content. A board editor
+      // who named their own origin here was answered with the terminal's
+      // history, and got to supply the values substituted into commands — both
+      // demonstrated against a running terminal, neither theorised. So the URL
+      // is ignored outright. Nothing is lost: the app and the wrapper framing
+      // this page are published to the same origin, so our own origin is the
+      // answer anyway.
+      //
+      // Modal, served from loopback by the terminal server: the URL was built
+      // locally by the app itself and cannot be board content, because a board
+      // embed cannot load loopback at all. There the parameter is trustworthy,
+      // and it is also necessary — the app is on a different origin from this
+      // page, and nothing else here knows which.
       const BRIDGE_TIMEOUT_MS = 4000;
+      const DEV_APP_ORIGINS = [
+        'http://localhost:5173',
+        'https://localhost:5173',
+        'http://localhost:4173'
+      ];
+      function appOrigins() {
+        const list = [window.location.origin];
+        if (SERVED_LOCALLY) {
+          (params.get('appOrigins') || '').split(',')
+            .map(function (o) { return o.trim(); })
+            .filter(Boolean)
+            .forEach(function (o) { if (list.indexOf(o) === -1) list.push(o); });
+        }
+        DEV_APP_ORIGINS.forEach(function (o) { if (list.indexOf(o) === -1) list.push(o); });
+        return list;
+      }
 
       let bridgeWindow = null;
       let bridgeOrigin = null;
@@ -826,6 +882,7 @@
        * reply. Latches onto whichever frame answers, so later calls stop
        * broadcasting at every frame on the page. */
       function askBridge(request, replyType) {
+        const APP_ORIGINS = appOrigins();
         return new Promise(function (resolve, reject) {
           const timer = setTimeout(function () {
             window.removeEventListener('message', onMessage);
@@ -961,6 +1018,22 @@
        * [LINK_OUTPUT]") — a single `.replace()` pass never finds that, since
        * it only matches against the original string. Capped so a token whose
        * own value contains itself can't loop forever. */
+      /** A substituted value is board content: anyone with edit access to the
+       * board wrote it. Carriage returns and newlines in it are not text, they
+       * are Enter — [INPUT] alone joins connected items with a newline, so two
+       * connected stickies were enough to run the second one as its own
+       * command. Other control characters can reposition the cursor, which is
+       * how you make what is on screen disagree with what is on the line.
+       *
+       * Collapsed to spaces rather than dropped, so a two-sticky [INPUT] still
+       * reads as two words instead of one run-together one. This does NOT make
+       * a value shell-safe, and is not trying to: quoting is the operator's
+       * business. It makes the value one line, so that the line the operator is
+       * shown is the line that will run. */
+      function sanitiseSubstitution(value) {
+        return String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f]/g, ' ');
+      }
+
       const MAX_NAMED_TOKEN_PASSES = 5;
       function expandNamedTokens(input, named) {
         if (!named) return input;
@@ -1033,7 +1106,10 @@
             }
             // INPUT is a built-in token (the unlabelled-items blob); an explicit
             // connector caption literally named "INPUT" takes priority over it.
-            const lookup = Object.assign({ INPUT: connectedText || '[no-connected-docs]' }, named);
+            const lookup = { INPUT: sanitiseSubstitution(connectedText) || '[no-connected-docs]' };
+            Object.keys(named || {}).forEach(function (k) {
+              lookup[k] = sanitiseSubstitution(named[k]);
+            });
             output = expandNamedTokens(output, lookup);
           } catch (error) {
             console.error('Failed to fetch context:', error);
@@ -1062,6 +1138,21 @@
       // Track if we're currently processing an async expansion
       let isProcessingAsync = false;
 
+      /** Set once an expansion has been written to the line and not yet run.
+       *
+       * Expansion used to end with a carriage return, so board content went
+       * straight to the shell and the operator saw the result only after it had
+       * run. Typing `echo [INPUT]` was enough: whatever a collaborator had put
+       * on a connected sticky executed, unreviewed, on the machine running the
+       * terminal.
+       *
+       * Now expansion writes the real command onto the prompt line and stops.
+       * The next Enter submits it verbatim. That turns a sticky into something
+       * you are shown before you run, which is the whole of the fix — the value
+       * is still not shell-quoted, and quoting is still the operator's job, but
+       * it is now a visible risk rather than a silent one. */
+      let awaitingConfirm = false;
+
       // Handle terminal input with variable expansion
       term.onData(async (data) => {
         if (!transport || !transport.isOpen()) {
@@ -1075,6 +1166,16 @@
 
         // Check if Enter key pressed (carriage return)
         if (data === '\r' || data === '\n') {
+          // An expansion is sitting on the line, visible. This Enter is the
+          // operator confirming it, so send it as typed and expand nothing:
+          // re-expanding would re-read the board and could substitute something
+          // other than what is on screen.
+          if (awaitingConfirm) {
+            awaitingConfirm = false;
+            inputBuffer = '';
+            transport.send({ type: 'input', data: '\r' });
+            return;
+          }
           // Check if we need to expand variables
           if (containsVariables(inputBuffer)) {
             // Check if we have async variables that need fetching
@@ -1082,31 +1183,36 @@
               isProcessingAsync = true;
               try {
                 const expanded = await expandVariables(inputBuffer);
-                
-                // Clear the current line in shell (Ctrl+U kills line, then we send expanded)
+
+                // Replace the line with the expansion and leave it there.
                 transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
-                
-                // Send the expanded command
-                transport.send({ type: 'input', data: expanded + '\r' });
+                transport.send({ type: 'input', data: expanded });
+                inputBuffer = expanded;
+                awaitingConfirm = true;
+                return;
               } catch (error) {
                 console.error('Error expanding variables:', error);
                 // Never send raw <...> to shell (causes redirection parse errors).
                 // Clear line and send safe expansion (async vars become placeholders).
                 const fallback = expandSyncVariablesSafe(inputBuffer);
                 transport.send({ type: 'input', data: '\x15' });
-                transport.send({ type: 'input', data: fallback + '\r' });
+                transport.send({ type: 'input', data: fallback });
+                inputBuffer = fallback;
+                awaitingConfirm = true;
+                return;
               } finally {
                 isProcessingAsync = false;
               }
             } else {
               // Sync-only variables (safe expand so we never send raw <viewport>/[INPUT] to shell)
               const expanded = expandSyncVariablesSafe(inputBuffer);
-              
-              // Clear the current line in shell (Ctrl+U kills line, then we send expanded)
+
+              // Replace the line with the expansion and leave it there.
               transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
-              
-              // Send the expanded command
-              transport.send({ type: 'input', data: expanded + '\r' });
+              transport.send({ type: 'input', data: expanded });
+              inputBuffer = expanded;
+              awaitingConfirm = true;
+              return;
             }
           } else {
             // No variables, just send Enter
@@ -1124,8 +1230,11 @@
           inputBuffer += data;
           transport.send({ type: 'input', data });
         } else {
-          // Control characters (Ctrl+C, etc.) - send directly, reset buffer
+          // Control characters (Ctrl+C, etc.) - send directly, reset buffer.
+          // Ctrl+C on a pending expansion abandons it, so stop expecting a
+          // confirming Enter.
           inputBuffer = '';
+          awaitingConfirm = false;
           transport.send({ type: 'input', data });
         }
       });
