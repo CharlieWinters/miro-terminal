@@ -126,29 +126,97 @@
     render();
   }
 
-  /** Asked once per session. A native dialog on purpose: it is drawn by the
-   * browser, names the origin asking, and cannot be dressed up by anything on
-   * the board. Denial is remembered for this attempt only, so a mistaken no is
-   * one reload away from being asked again. */
+  /** Requests waiting on a decision: sid -> { sid, embedId, source, origin }.
+   *
+   * This was a window.confirm at first, which was wrong twice over. Joining a
+   * board with several terminals on it meant a queue of blocking dialogs, one
+   * per session, before anything rendered. And confirm() stops the event loop,
+   * so the embeds' retries piled up behind it and released in a burst — which
+   * is what turned a latent race in openSession into eight sockets on one PTY.
+   *
+   * A panel instead: it lists every waiting terminal at once, can be answered
+   * in any order or all together, and blocks nothing while it is open. */
+  var pending = {};
   var denied = {};
-  function approve(sid, embedId, origin) {
-    if (isApproved(sid)) return true;
-    if (denied[sid]) return false;
-    var ok = window.confirm(
-      'A terminal on this board is asking to go live.\n\n' +
-      'Session: ' + sid.slice(0, 12) + '\n' +
-      'Embed: ' + (embedId || 'unnamed') + '\n' +
-      'Asked by: ' + origin + '\n\n' +
-      'Allowing this lets that page send keystrokes to this shell until you ' +
-      'close this tab or revoke it on the relay page.\n\n' +
-      'Allow?'
-    );
-    if (ok) setApproved(sid, true); else denied[sid] = true;
-    return ok;
+  var panelOpenAt = 0;
+
+  function approvalState() {
+    return {
+      type: 'state',
+      pending: Object.keys(pending).map(function (sid) {
+        return { sid: sid, embedId: pending[sid].embedId, origin: pending[sid].origin };
+      }),
+      approved: approvedSids()
+    };
+  }
+
+  var channel = null;
+  try { channel = new BroadcastChannel('mt-relay-approval'); } catch (e) {}
+  function publishState() { if (channel) channel.postMessage(approvalState()); }
+
+  /** Records a request and puts the panel in front of the person at the machine.
+   * Re-opening on every retry would fight whatever they are doing, so the panel
+   * is only raised once every few seconds; the request itself is always kept. */
+  function requestApproval(sid, embedId, source, origin) {
+    var known = Object.prototype.hasOwnProperty.call(pending, sid);
+    pending[sid] = { sid: sid, embedId: embedId, source: source, origin: origin };
+    publishState();
+    render();
+    var now = Date.now();
+    if (!known && now - panelOpenAt > 5000) {
+      panelOpenAt = now;
+      try {
+        if (window.miro && miro.board && miro.board.ui) {
+          miro.board.ui.openPanel({ url: 'approve.html' });
+        }
+      } catch (e) { /* panel refused; the relay page still lists the request */ }
+    }
+  }
+
+  function decide(sid, allow) {
+    var req = pending[sid];
+    delete pending[sid];
+    if (allow) {
+      setApproved(sid, true);
+      if (req) {
+        // Drive it ourselves rather than waiting to be asked again: the embed
+        // gives up retrying long before a person gets round to answering, but
+        // its listener stays attached, so a late ready still lands.
+        openSession(req.sid, req.embedId, req.source, req.origin).catch(function (err) {
+          post(req.source, req.origin,
+               { type: M.closed, v: 1, embedId: req.embedId, sid: sid, error: err.message });
+        });
+      }
+    } else {
+      denied[sid] = true;
+      if (req) {
+        post(req.source, req.origin, {
+          type: M.closed, v: 1, embedId: req.embedId, sid: sid,
+          error: 'the person at this machine declined live mode for this session'
+        });
+      }
+    }
+    publishState();
+    render();
+  }
+
+  if (channel) {
+    channel.onmessage = function (e) {
+      var d = e.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'list') { publishState(); return; }
+      if (d.type === 'decide') { decide(d.sid, Boolean(d.allow)); return; }
+      if (d.type === 'allow-all') {
+        Object.keys(pending).forEach(function (sid) { decide(sid, true); });
+        return;
+      }
+      if (d.type === 'revoke') { window.mtRevoke(d.sid); publishState(); return; }
+    };
   }
 
   window.mtRevoke = function (sid) {
     setApproved(sid, false);
+    delete pending[sid];
     var s = sessions[sid];
     if (s) {
       s.stale = true;
@@ -211,10 +279,15 @@
    * reconnecting embed gets a correct screen rather than a partial one.
    */
   async function openSession(sid, embedId, source, origin) {
-    // Ask the person at the machine, before anything else happens. Nothing
-    // below this line is reached for a session they have not agreed to.
-    if (!approve(sid, embedId, origin)) {
-      throw new Error('the person at this machine has not allowed live mode for this session');
+    // Nothing below this line is reached for a session the person at this
+    // machine has not agreed to. An undecided request is parked and surfaced in
+    // the approval panel; when it is answered, decide() calls back in here.
+    if (!isApproved(sid)) {
+      if (denied[sid]) {
+        throw new Error('the person at this machine declined live mode for this session');
+      }
+      requestApproval(sid, embedId, source, origin);
+      throw new Error('waiting for permission on the host\'s screen');
     }
 
     var existing = sessions[sid];
