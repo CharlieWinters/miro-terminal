@@ -561,7 +561,7 @@
         kind: 'websocket',
         connect() {
           ws = new WebSocket(url);
-          ws.onopen = () => handlers.onOpen();
+          ws.onopen = () => handlers.onOpen({ revived: false });
           ws.onmessage = (event) => {
             let envelope = null;
             try {
@@ -663,7 +663,7 @@
           nonce = d.nonce;
           open = true;
           if (retry) { clearInterval(retry); retry = null; }
-          handlers.onOpen();
+          handlers.onOpen({ revived: Boolean(d.revived) });
           return;
         }
         if (d.type === 'mt-relay:frame') {
@@ -817,8 +817,16 @@
       /** Handlers are transport-agnostic on purpose: nothing below knows or
        * cares whether an envelope arrived over a socket or a postMessage. */
       const transportHandlers = {
-        onOpen() {
-          setStatus('connected', `Connected (${currentSettings.sessionName || 'default'})`);
+        onOpen(info) {
+          // A revived session is a FRESH shell under the same id — the previous
+          // one had idled out server-side. Worth saying: a clean prompt where
+          // there used to be work looks like lost work, and silence invites
+          // that reading.
+          if (info && info.revived) {
+            setStatus('connected', 'Fresh shell — the previous session had ended');
+          } else {
+            setStatus('connected', `Connected (${currentSettings.sessionName || 'default'})`);
+          }
           reconnectAttempts = 0;
           transport.send({ type: 'resize', cols: term.cols, rows: term.rows });
         },
@@ -862,7 +870,9 @@
             setStatus('connecting', `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`);
             setTimeout(connect, reconnectDelay);
           } else {
-            setStatus('error', 'Connection lost. Refresh to reconnect.');
+            // Not a dead end: the visibility hook above retries whenever this
+            // embed is looked at again.
+            setStatus('error', 'Connection lost — will retry when this is back in view.');
           }
         },
 
@@ -878,6 +888,27 @@
             : createWebSocketTransport(wsUrl, transportHandlers);
         currentTransport = transport;
         transport.connect();
+      }
+
+      // Coming back into view is a better reason to retry than a spent counter.
+      //
+      // Miro and Chrome throttle or reset offscreen app iframes, so an embed
+      // scrolled away from can burn its whole retry budget while nobody is
+      // looking and then sit there dead, telling someone to refresh a board
+      // they are already looking at. Visibility is the signal that actually
+      // correlates with somebody caring, so it resets the budget and tries
+      // again. The PTY survives on the server and replays its scrollback, so a
+      // reconnect costs nothing and returns a correct screen.
+      if (!window.__miroTerminalVisibilityHook) {
+        window.__miroTerminalVisibilityHook = true;
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState !== 'visible') return;
+          if (!currentTransport || currentTransport.isOpen()) return;
+          reconnectAttempts = 0;
+          setStatus('connecting', 'Reconnecting…');
+          try { currentTransport.close(); } catch (e) {}
+          connect();
+        });
       }
 
       // Set up reconnect callback for settings changes

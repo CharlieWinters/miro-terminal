@@ -60,9 +60,12 @@ change it, `ARCHITECTURE.md` explains why each piece is where it is.
 ```bash
 cd backend
 npm install
-cp /dev/null .env     # see the table below for what you may want in it
 npm start
 ```
+
+Configuration is optional to start with — see [Configuration](#configuration)
+for `backend/.env`. You will come back to it in step 3 to set `EMBED_ORIGINS`,
+which live terminals need.
 
 Confirm it: `curl -k https://localhost:3001/health` should return
 `{"status":"ok",...}`. Note `http://localhost:3001` will refuse outright once
@@ -97,22 +100,36 @@ to somebody who just wants to read a terminal's history, which is most people.
 The second is the developer's tool, served from your own machine, and its icon
 does the developer's job.
 
-Paste `app-manifest.yaml` and `app-manifest-relay.yaml` into the two apps
-respectively, replacing `YOUR-USER`. Install both on your developer team.
+In order:
 
-Then tell the relay where your embed is published, in `backend/.env`:
+1. Paste `app-manifest.yaml` and `app-manifest-relay.yaml` into the two apps
+   respectively, replacing `YOUR-USER`. Install both on your developer team.
 
-```
-EMBED_ORIGINS=https://YOUR-USER.github.io
-```
+2. Tell the relay where you published the embed. In `backend/.env`:
 
-This cannot go on the relay app's App URL: Miro normalises `sdkUri` and drops
-query parameters from it. Without it, live terminals cannot connect — the relay
-page says so and the embed shows the reason.
+   ```
+   EMBED_ORIGINS=https://YOUR-USER.github.io
+   ```
 
-Then **click the relay app's icon once**. A second app's headless iframe is only
-reliably loaded on a cold board load after the user has opened it at least
-once, so without that click live terminals work only sporadically.
+   **Then restart the terminal server** — `.env` is read at startup, so an
+   unrestarted server still knows nothing about it. Check it took:
+
+   ```bash
+   curl -k https://localhost:3001/api/relay-config
+   ```
+
+   That should list your origin. `{"embedOrigins":[]}` means live terminals will
+   be refused.
+
+   This cannot go on the relay app's App URL, which is where you would expect
+   it: Miro normalises `sdkUri` and drops query parameters from it, so the
+   setting never arrives. The relay page states which origins it accepts, and a
+   refused embed shows the reason rather than timing out.
+
+3. **Click the relay app's icon once.** A second app's headless iframe is only
+   reliably loaded on a cold board load after the user has opened it at least
+   once, so without that click live terminals work only sporadically. The icon
+   opens the terminal spawner.
 
 ### 4. Point the app at your server
 
@@ -147,6 +164,13 @@ The label lives on the **connector's caption** — double-click the line to add
 one — never on the item, so an item's own text is never parsed or rewritten.
 Substitution recurses up to five passes, so a sticky whose text mentions
 another token resolves too.
+
+**When an embed resets.** Miro and Chrome reload offscreen app iframes, so
+scrolling away from a live terminal and back will reconnect it. The shell itself
+lives on the server and its scrollback is replayed, so it comes back where you
+left it. If the session had idled out server-side (`SESSION_TIMEOUT`, an hour by
+default) you get a fresh shell under the same name, and the status bar says so —
+a clean prompt where there used to be work otherwise reads as lost work.
 
 **What others see.** Anyone with the Miro Terminal app installed sees the last
 ~50 lines the terminal wrote, plus who ran it and when, read from the embed's

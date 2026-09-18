@@ -123,6 +123,18 @@
       try { existing.ws.close(); } catch (e) {}
     }
 
+    // Did this session still exist, or is /api/pty/start about to create a new
+    // one under the same id? The terminal says so either way, because a fresh
+    // prompt where there used to be work reads as lost work unless something
+    // explains it.
+    var existed = false;
+    try {
+      var check = await fetch('/api/pty/' + encodeURIComponent(sid));
+      if (check.ok) existed = Boolean((await check.json()).exists);
+    } catch (e) {
+      /* treat as unknown; the worst case is a notice that was not needed */
+    }
+
     var body = { sid: sid };
     if (cwd) body.cwd = cwd;
     var res = await fetch('/api/pty/start', {
@@ -149,7 +161,9 @@
     ws.onopen = function () {
       entry.state = 'open';
       render();
-      post(source, origin, { type: M.ready, v: 1, embedId: embedId, sid: sid, nonce: nonce });
+      post(source, origin, {
+        type: M.ready, v: 1, embedId: embedId, sid: sid, nonce: nonce, revived: !existed
+      });
     };
     ws.onmessage = function (event) {
       var envelope = null;
