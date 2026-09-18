@@ -56,6 +56,25 @@ the browser log an error per non-matching frame, which on a board with several
 apps installed buried everything worth reading. Outbound discovery carries
 nothing secret, so the asymmetry costs nothing: ask loudly, listen selectively.
 
+Stated as a rule, that is not quite what the code does, and the exceptions are
+worth knowing before relying on it:
+
+- `hostBridge.ts`'s `broadcast` uses **exact** origins, one post per allowed
+  origin — not a wildcard. The rule above describes `relay.html`'s `announce`,
+  `terminal.html`'s transport discovery and the wrapper's, but not this one.
+- The reply direction is wildcarded when the *requester* had an opaque origin
+  (`relay.html`'s `post`, `hostBridge.ts`'s `reply`). Those replies are not
+  discovery and do carry payload — the relay nonce, and board context
+  respectively. See SECURITY.md on opaque origins.
+- `terminal.html`'s `post` is one function for discovery *and* for keystroke
+  envelopes. Its wildcard branch is unreachable for the latter only because of
+  the order in which relayWindow gets set.
+
+Every inbound allowlist on the embed side (`appOrigins`, `relayOrigins`) is read
+from the surface's own **URL**, and an embed's URL is board content. So those
+allowlists are configured by the channel they are meant to guard: they stop
+accidents and unrelated apps, not someone with board edit access.
+
 ## The two things that cross a boundary
 
 **Creating a terminal** needs a localhost call (`/api/pty/start`) and a board

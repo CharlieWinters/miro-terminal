@@ -18,8 +18,11 @@
 #
 #   EMBED_ORIGINS=https://YOUR-USER.github.io
 #
-# It lives there rather than on this line because .env is the one place nothing
-# else rewrites, and because the terminal server needs the value too.
+# It lives there rather than on this line by choice, not necessity. A query
+# parameter on this URL does survive - measured 18 Sep 2026, correcting an
+# earlier note here that said Miro strips it. And the terminal server does not
+# actually need the value; it only hands it back to the relay. So this could
+# move onto the line below and save you the .env edit and the server restart.
 #
 # Without EMBED_ORIGINS set, live terminals cannot connect. The relay page says
 # so, and the embed shows the reason rather than timing out.

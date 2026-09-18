@@ -43,9 +43,15 @@ change it, `ARCHITECTURE.md` explains why each piece is where it is.
 - **HTTPS on the terminal server**, with a certificate your browser trusts.
   [mkcert](https://github.com/FiloSottile/mkcert) is the easy route:
   ```bash
+  cd backend
   mkcert -install
   mkcert localhost 127.0.0.1 ::1
   ```
+  That writes `localhost+2.pem` and `localhost+2-key.pem` into whatever
+  directory you ran it in. **Generating them is not the last step** — the server
+  only uses them if you point `SSL_KEY_PATH` and `SSL_CERT_PATH` at them, which
+  step 1 does.
+
   This is not optional and the failure is silent: a certificate warning cannot
   render inside a board modal, so an untrusted cert looks exactly like a server
   that is not running.
@@ -55,21 +61,45 @@ change it, `ARCHITECTURE.md` explains why each piece is where it is.
 
 ## Setup
 
+**If you only want to read the terminals on a board someone else is running**,
+you need none of this. Install the **Miro Terminal** app on your team (step 3,
+first row) and stop there — no server, no certificates, no second app. History
+is read from the board itself. Everything below is for running a terminal of
+your own.
+
 ### 1. Run the terminal server
 
 ```bash
 cd backend
 npm install
+```
+
+Now write `backend/.env`. TLS is the one thing you cannot defer — the app is
+loaded from an `https://` board page, and a browser will not let it talk to a
+plain-`http://` server:
+
+```
+SSL_KEY_PATH=localhost+2-key.pem
+SSL_CERT_PATH=localhost+2.pem
+```
+
+Both are resolved relative to `backend/`, so those are the filenames `mkcert`
+gave you in Requirements. Then:
+
+```bash
 npm start
 ```
 
-Configuration is optional to start with — see [Configuration](#configuration)
-for `backend/.env`. You will come back to it in step 3 to set `EMBED_ORIGINS`,
-which live terminals need.
+It should say `Terminal server running on https://localhost:3001`. If it says
+`http://` instead, the two variables above are missing or misspelled, and it
+will warn you so on the same line — keep going only once it says `https`.
 
-Confirm it: `curl -k https://localhost:3001/health` should return
-`{"status":"ok",...}`. Note `http://localhost:3001` will refuse outright once
-TLS is on — always `https` for that port.
+Confirm it: `curl -k https://localhost:3001/health` returns
+`{"status":"ok",...}`. Everything else here assumes `https` on this port.
+
+The rest of the configuration can wait — see [Configuration](#configuration).
+You will come back to it in step 3 to set `EMBED_ORIGINS`, which live terminals
+need.
 
 ### 2. Publish the frontend
 
@@ -122,10 +152,12 @@ In order:
    be refused.
 
    It lives here rather than on the relay app's App URL — which is where you
-   might expect it — because `.env` is the one place nothing else rewrites, and
-   because the terminal server needs the value too. The relay page states which
-   origins it accepts, and a refused embed shows the reason rather than timing
-   out.
+   might expect it — by choice rather than necessity. An earlier note claimed
+   Miro strips query parameters from `sdkUri`; that was measured wrong, and the
+   terminal server makes no use of the value beyond serving it back to the
+   relay. Moving it onto the App URL would remove this step and the restart
+   below, and is on the list. The relay page states which origins it accepts,
+   and a refused embed shows the reason rather than timing out.
 
 3. **Click the relay app's icon once.** A second app's headless iframe is only
    reliably loaded on a cold board load after the user has opened it at least
@@ -190,8 +222,11 @@ This app runs a shell. Read this bit.
   it is off by default and per-browser, and the switch stays visible while it is
   on. The relay authorises input with a nonce it issues over `postMessage`, never
   through a URL, so nothing secret is ever written into board content.
-- **The relay only accepts session requests from origins you list** in its App
-  URL. The default is localhost only.
+- **The relay only accepts session requests from origins you list** in
+  `EMBED_ORIGINS` in `backend/.env` (not in its App URL — see step 3). There is
+  no default: until you set it, live terminals are refused outright. Treat this
+  as configuration, not as a security boundary — it is an origin string check,
+  and any frame already running on the board page can work around it.
 - **Terminal history goes onto the board.** Anything on screen goes with it:
   tokens a CLI echoes, `env` output, `git remote` URLs with credentials. It is
   in app metadata, so only people with the app installed can read it — but that
@@ -209,11 +244,12 @@ is ever copy-pasted with real values in it.
 | --- | --- | --- |
 | `PORT` | `3001` | |
 | `SSL_KEY_PATH` / `SSL_CERT_PATH` | unset | Set both. See Requirements. |
-| `SIGN_SECRET` | dev-only fallback | **Required** once `NODE_ENV=production`. |
+| `SIGN_SECRET` | dev-only fallback | Signs PTY tokens. The fallback is a **constant published in this repo**, so treat it as public knowledge and set your own: `openssl rand -hex 32`. Only enforced when `NODE_ENV=production`, which a local `npm start` is not. |
 | `SESSION_TIMEOUT` | `3600000` | Idle PTY cleanup, ms. |
 | `TOKEN_TTL` | `900000` | PTY token lifetime, ms. |
 | `SCROLLBACK_BYTES` | `204800` | Replayed to any client that connects, so a reopened embed shows recent history rather than a blank cursor. |
-| `ALLOWED_ROOT` | your home dir | `cwd` requests are confined here, path-traversal checked. |
+| `ALLOWED_ROOT` | your home dir | Which directories `/api/browse` will list, and which a new session may *start* in. Not a sandbox: it is a real login shell, so `cd /` works from the first prompt. |
+| `HOST` | `127.0.0.1` | Interface to bind. Leave it alone. Anything reachable that is not loopback gets a shell — see [Security](#security). |
 | `TRUST_PROXY` | unset | `1` if TLS terminates at a proxy in front. |
 | `CORS_ALLOWED_ORIGINS` | unset | Extra allowed origins, comma-separated. |
 | `EMBED_ORIGINS` | unset | Where you published the embed, e.g. `https://you.github.io`. Required for live terminals; no default, because opening a session is what authorises keystrokes. |
@@ -251,6 +287,7 @@ miro-terminal/
 | Live mode says the relay refuses this origin | `EMBED_ORIGINS` is unset or wrong in `backend/.env` — restart the server after changing it. The relay page lists what it accepts |
 | Live mode never connects at all | Relay app not installed, or installed but never opened once |
 | Terminal opens but shows nothing | Certificate not trusted. A cert warning cannot render in a modal, so it fails silently |
+| `curl https://localhost:3001/health` won't connect, and startup said `http://` | `SSL_KEY_PATH`/`SSL_CERT_PATH` unset in `backend/.env`, so the server came up without TLS. See step 1 |
 | `[INPUT]` and friends stop expanding | The embed URL lost its `embedId`, which is the key board context is looked up under |
 | A publish seems to have no effect | Check the bundle hash actually changed |
 
