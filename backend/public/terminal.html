@@ -730,6 +730,13 @@
           return open;
         },
         close() {
+          // Tell the relay, so it releases the socket. A socket left open keeps
+          // the PTY server treating the session as active, so it would never
+          // idle out — switching live mode off and on repeatedly would strand
+          // one per toggle.
+          if (open && nonce) {
+            post({ type: 'mt-relay:close', v: 1, sid: sessionId, nonce: nonce });
+          }
           open = false;
           nonce = null;
           if (retry) { clearInterval(retry); retry = null; }
@@ -1036,8 +1043,14 @@
         }
       }
 
-      // Last chance to persist what is on screen when the modal closes.
-      window.addEventListener('pagehide', function () { flushHistory(); });
+      // Last chance to persist what is on screen, and to release the relay's
+      // socket, when this page goes away.
+      window.addEventListener('pagehide', function () {
+        flushHistory();
+        if (currentTransport) {
+          try { currentTransport.close(); } catch (e) {}
+        }
+      });
 
       // -----------------------------------------------------------------------
       // Talking to the board

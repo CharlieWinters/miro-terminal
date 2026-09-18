@@ -79,6 +79,7 @@
     frame: 'mt-relay:frame',
     closed: 'mt-relay:closed',
     refused: 'mt-relay:refused',
+    close: 'mt-relay:close',
     hello: 'mt-relay:hello'
   };
 
@@ -123,8 +124,36 @@
    */
   async function openSession(sid, embedId, cwd, source, origin) {
     var existing = sessions[sid];
-    if (existing && existing.ws) {
-      try { existing.ws.close(); } catch (e) {}
+
+    // Already up for this same embed frame: re-announce and stop.
+    //
+    // The embed retries `open` until it sees `ready`, and a retry that crosses
+    // paths with the reply used to tear down a working socket and build
+    // another. Every new socket replays the PTY's scrollback and every live
+    // socket echoes input, so two of them meant the prompt appearing twice and
+    // each keystroke arriving twice. Re-sending the nonce is both cheaper and
+    // idempotent.
+    if (existing && existing.state === 'open' && existing.source === source) {
+      post(source, origin, {
+        type: M.ready, v: 1, embedId: embedId, sid: sid, nonce: existing.nonce, revived: false
+      });
+      return;
+    }
+
+    // An open is already in flight for this frame; let it finish.
+    if (existing && existing.state === 'connecting' && existing.source === source) {
+      return;
+    }
+
+    // Superseding a different frame's connection — the embed was reloaded, or
+    // live mode was switched off and on. Mark it stale BEFORE closing: close()
+    // only requests a close, and until it completes the old socket keeps
+    // delivering messages whose handlers would go on forwarding to the embed.
+    if (existing) {
+      existing.stale = true;
+      if (existing.ws) {
+        try { existing.ws.close(); } catch (e) {}
+      }
     }
 
     // Did this session still exist, or is /api/pty/start about to create a new
@@ -163,6 +192,7 @@
     render();
 
     ws.onopen = function () {
+      if (entry.stale || sessions[sid] !== entry) return;
       entry.state = 'open';
       render();
       post(source, origin, {
@@ -170,6 +200,10 @@
       });
     };
     ws.onmessage = function (event) {
+      // A superseded socket must not forward. This is the check that stops
+      // duplicate output: without it, both the old and new sockets deliver
+      // every frame to the same embed.
+      if (entry.stale || sessions[sid] !== entry) return;
       var envelope = null;
       try { envelope = JSON.parse(event.data); } catch (e) { return; }
       entry.inbound++;
@@ -177,11 +211,16 @@
       post(source, origin, { type: M.frame, v: 1, embedId: embedId, sid: sid, envelope: envelope });
     };
     ws.onclose = function () {
+      // A stale socket closing is the expected end of a supersede, not a
+      // disconnection the embed should hear about — telling it would make it
+      // reconnect and start the cycle again.
+      if (entry.stale || sessions[sid] !== entry) return;
       entry.state = 'closed';
       render();
       post(source, origin, { type: M.closed, v: 1, embedId: embedId, sid: sid });
     };
     ws.onerror = function () {
+      if (entry.stale || sessions[sid] !== entry) return;
       entry.state = 'error';
       render();
     };
@@ -190,7 +229,7 @@
   window.addEventListener('message', function (event) {
     var d = event.data;
     if (!d || typeof d !== 'object') return;
-    if (d.type !== M.open && d.type !== M.frame && d.type !== M.hello) return;
+    if (d.type !== M.open && d.type !== M.frame && d.type !== M.hello && d.type !== M.close) return;
     // An opaque-origin (sandboxed) embed arrives as "null" and is allowed
     // through; the nonce below is what actually authorises anything privileged.
     if (event.origin !== 'null' && ALLOWED_EMBED_ORIGINS.indexOf(event.origin) === -1) {
@@ -225,6 +264,20 @@
       return;
     }
 
+    // The embed is going away — live mode switched off, or the page unloading.
+    // Without this the socket stays open, and because the PTY server counts a
+    // connected client as activity, the session would never idle out.
+    if (d.type === M.close) {
+      var closing = sessions[d.sid];
+      if (closing && closing.nonce === d.nonce) {
+        closing.stale = true;
+        try { closing.ws.close(); } catch (e) {}
+        delete sessions[d.sid];
+        render();
+      }
+      return;
+    }
+
     if (d.type === M.open) {
       if (!d.sid) return;
       openSession(d.sid, d.embedId || '', d.cwd, event.source,
@@ -240,7 +293,7 @@
     // keystrokes — so it is gated on the nonce this relay issued for this
     // session, which the embed can only have received by postMessage.
     var entry = sessions[d.sid];
-    if (!entry || !entry.ws) return;
+    if (!entry || !entry.ws || entry.stale) return;
     if (!d.nonce || d.nonce !== entry.nonce) {
       console.warn('[relay] refusing a frame with a bad nonce for', d.sid);
       return;
