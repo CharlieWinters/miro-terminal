@@ -336,6 +336,34 @@ app.post('/api/pty/start', (req, res) => {
   });
 });
 
+// Attach to a session that already exists, and only that. This is what the
+// relay calls; it deliberately cannot reach /api/pty/start.
+//
+// The difference is the whole of the fix. /api/pty/start creates a session for
+// whatever id it is handed, so a frame asking the relay to open an id nobody
+// had ever seen was answered with a brand new shell, in a working directory it
+// also chose. Nothing had to be guessed, and no prior knowledge of the board
+// was needed. Here an unknown id is an error, so the set of sessions a frame
+// can reach is exactly the set someone already created at this machine.
+app.post('/api/pty/:sid/attach', (req, res) => {
+  const { sid } = req.params;
+  const session = sessions.get(sid);
+  if (!session) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  session.lastSeen = Date.now();
+  const token = createToken(sid);
+  const wsProtocol = req.secure ? 'wss' : 'ws';
+  const host = req.get('host');
+
+  res.json({
+    sid,
+    token,
+    wsUrl: `${wsProtocol}://${host}/pty?sid=${encodeURIComponent(sid)}&token=${encodeURIComponent(token)}`
+  });
+});
+
 app.delete('/api/pty/close', (req, res) => {
   const { sid } = req.query;
   
