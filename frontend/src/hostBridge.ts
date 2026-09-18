@@ -59,8 +59,18 @@ function allowedOrigins(): string[] {
 }
 
 /** A sandboxed iframe has an opaque origin and arrives as the literal "null".
- * Allowed through, because the embedId check below is what actually
- * authorises — origin is unusable as a check in that case. */
+ *
+ * NOT removed here, unlike the equivalent in relay.html. The embed was measured
+ * on 18 Sep 2026 and is not opaque-origin — Miro renders it with
+ * allow-same-origin — which is what allowed the relay's carve-out to go. The
+ * other callers of this bridge are the modal and the spawner, opened through
+ * openModal/openPanel, and those have NOT been measured. Removing this before
+ * measuring them risks breaking both.
+ *
+ * So read it as an open hole of known shape rather than a justified exception:
+ * any page that sandboxes itself skips the origin check below, and what it
+ * reaches is board reads and metadata writes. Measure the modal, then delete
+ * this. */
 const OPAQUE_ORIGIN = 'null';
 
 /** Long enough for a loopback round trip, short enough that a stopped server
@@ -150,16 +160,37 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
  * `terminalEmbed.ts` stamps at creation. Matched on metadata rather than on
  * anything in the message, so the modal URL below is built from board state
  * and never from attacker-controllable input. */
+const embedCache = new Map<string, { embed: EmbedWidget; at: number }>();
+/** Long enough that a burst of messages costs one lookup, short enough that a
+ * deleted or recreated embed heals itself without any invalidation plumbing. */
+const EMBED_CACHE_TTL_MS = 30_000;
+
 async function findEmbedByEmbedId(embedId: string): Promise<EmbedWidget | null> {
+  // This is a scan: one call for the board's embeds, then one metadata read per
+  // embed until a match. It runs on every bridge message — hello, ctx-request,
+  // history-write, open-dev — and embeds re-announce themselves constantly,
+  // because Miro resets offscreen app iframes. Uncached, on a board with four
+  // terminals, that is five SDK calls per message against an hourly credit
+  // budget. Cache the result; the scan is only for a miss.
+  const hit = embedCache.get(embedId);
+  if (hit && Date.now() - hit.at < EMBED_CACHE_TTL_MS) return hit.embed;
+
   const embeds = (await miro.board.get({ type: 'embed' })) as unknown as EmbedWidget[];
   for (const embed of embeds) {
     try {
       const meta = await embed.getMetadata?.<{ embedId?: string }>(METADATA_KEY);
-      if (meta?.embedId && meta.embedId === embedId) return embed;
+      if (meta?.embedId) {
+        // Every embed this scan identifies goes in, not just the one asked
+        // for: the next message is usually about a sibling, and the scan
+        // already paid for the answer.
+        embedCache.set(meta.embedId, { embed, at: Date.now() });
+      }
+      if (meta?.embedId === embedId) return embed;
     } catch {
       // Not one of ours — no metadata under this key.
     }
   }
+  embedCache.delete(embedId);
   return null;
 }
 
@@ -528,9 +559,10 @@ async function handle(event: MessageEvent): Promise<void> {
 
 /** Posts a message to every frame on the page, at each allowed origin. Used
  * for the unsolicited hello and for history-changed nudges — neither has a
- * known recipient window, so both have to go wide. Cannot reach a sandboxed
- * embed (an exact targetOrigin never matches "null"), so an embed's own retry
- * loop remains the path that has to work. */
+ * known recipient window, so both have to go wide. An embed's own retry loop
+ * remains the path that has to work regardless. (This used to add that a
+ * sandboxed embed can never be reached with an exact targetOrigin. Measured
+ * false on 18 Sep 2026: the embed is not opaque-origin.) */
 function broadcast(message: Record<string, unknown>): void {
   const targets: Window[] = [];
   const collect = (win: Window, depth: number): void => {
