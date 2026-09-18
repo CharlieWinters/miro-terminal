@@ -13,16 +13,13 @@
 # It stores nothing and reads nothing from the board. It only relays bytes,
 # which is why it needs no scopes and why keeping it separate costs nothing.
 #
-# Nothing to replace in the URL below. Which origins the relay accepts is set
-# in backend/.env, NOT here:
+# Replace YOUR-USER in the URL below with wherever you published the embed.
+# That query parameter is how the relay learns which origins may ask it to open
+# a session; it arrives intact, which an earlier note here doubted.
 #
-#   EMBED_ORIGINS=https://YOUR-USER.github.io
-#
-# It lives there rather than on this line by choice, not necessity. A query
-# parameter on this URL does survive - measured 18 Sep 2026, correcting an
-# earlier note here that said Miro strips it. And the terminal server does not
-# actually need the value; it only hands it back to the relay. So this could
-# move onto the line below and save you the .env edit and the server restart.
+# Setting EMBED_ORIGINS in backend/.env still works and is still read, so an
+# existing setup needs no change. The App URL is simply the better home: no file
+# to edit, and no server restart to forget.
 #
 # Without EMBED_ORIGINS set, live terminals cannot connect. The relay page says
 # so, and the embed shows the reason rather than timing out.
@@ -30,7 +27,7 @@
 appName: Miro Terminal relay
 sdkVersion: SDK_V2
 
-sdkUri: https://localhost:3001/relay.html
+sdkUri: https://localhost:3001/relay.html?embedOrigins=https://YOUR-USER.github.io
 
 # None. It never touches the board.
 scopes: []

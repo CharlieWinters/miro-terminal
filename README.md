@@ -135,29 +135,26 @@ In order:
 1. Paste `app-manifest.yaml` and `app-manifest-relay.yaml` into the two apps
    respectively, replacing `YOUR-USER`. Install both on your developer team.
 
-2. Tell the relay where you published the embed. In `backend/.env`:
+2. Tell the relay where you published the embed. It is already in the relay
+   manifest's App URL, so this is just the `YOUR-USER` you replaced in step 1:
 
    ```
-   EMBED_ORIGINS=https://YOUR-USER.github.io
+   https://localhost:3001/relay.html?embedOrigins=https://YOUR-USER.github.io
    ```
 
-   **Then restart the terminal server** — `.env` is read at startup, so an
-   unrestarted server still knows nothing about it. Check it took:
+   No file to edit and no restart. The relay page lists what it accepts, and a
+   refused embed says so rather than timing out.
 
-   ```bash
-   curl -k https://localhost:3001/api/relay-config
-   ```
+   Setting `EMBED_ORIGINS` in `backend/.env` also still works, and is read on
+   top of the App URL — but it is read at startup, so **restart the terminal
+   server** if you change it. `curl -k https://localhost:3001/api/relay-config`
+   shows what the server knows; an empty list there is fine if the App URL
+   carries the value.
 
-   That should list your origin. `{"embedOrigins":[]}` means live terminals will
-   be refused.
-
-   It lives here rather than on the relay app's App URL — which is where you
-   might expect it — by choice rather than necessity. An earlier note claimed
-   Miro strips query parameters from `sdkUri`; that was measured wrong, and the
-   terminal server makes no use of the value beyond serving it back to the
-   relay. Moving it onto the App URL would remove this step and the restart
-   below, and is on the list. The relay page states which origins it accepts,
-   and a refused embed shows the reason rather than timing out.
+   It used to live only in `.env`, on the belief that Miro strips query
+   parameters from `sdkUri`. That was measured wrong — the parameter arrives
+   intact — and the terminal server never needed the value for itself, so the
+   App URL is now the documented home.
 
 3. **Click the relay app's icon once.** A second app's headless iframe is only
    reliably loaded on a cold board load after the user has opened it at least
@@ -284,7 +281,9 @@ miro-terminal/
 | Symptom | Cause |
 | --- | --- |
 | Embed says it runs on another machine, but it's yours | Dev server not running, or the app's origin changed and the saved backend URL was lost with it |
-| Live mode says the relay refuses this origin | `EMBED_ORIGINS` is unset or wrong in `backend/.env` — restart the server after changing it. The relay page lists what it accepts |
+| Live mode says the relay refuses this origin | The origin is missing from the relay app's App URL (`?embedOrigins=…`), or from `EMBED_ORIGINS` in `backend/.env` if you use that instead — restart the server after changing `.env`. The relay page lists what it accepts |
+| Live mode asks permission every time | Expected once per session per browser session. Approving is remembered until you close the tab or hit Revoke on the relay page |
+| Live mode says no such session on this machine | The relay can no longer create sessions, only attach to ones you started. Create it from the spawner first |
 | Live mode never connects at all | Relay app not installed, or installed but never opened once |
 | Terminal opens but shows nothing | Certificate not trusted. A cert warning cannot render in a modal, so it fails silently |
 | `curl https://localhost:3001/health` won't connect, and startup said `http://` | `SSL_KEY_PATH`/`SSL_CERT_PATH` unset in `backend/.env`, so the server came up without TLS. See step 1 |
