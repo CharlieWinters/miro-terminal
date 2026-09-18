@@ -18,10 +18,8 @@
 #
 #   EMBED_ORIGINS=https://YOUR-USER.github.io
 #
-# It has to live there because Miro normalises an app's sdkUri and drops query
-# parameters from it — a ?embedOrigins= on this line never arrives, and the
-# relay frame loads with only Miro's own _miro and _sdk params. Confirmed by
-# inspecting the frame.
+# It lives there rather than on this line because .env is the one place nothing
+# else rewrites, and because the terminal server needs the value too.
 #
 # Without EMBED_ORIGINS set, live terminals cannot connect. The relay page says
 # so, and the embed shows the reason rather than timing out.

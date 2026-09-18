@@ -121,10 +121,11 @@ In order:
    That should list your origin. `{"embedOrigins":[]}` means live terminals will
    be refused.
 
-   This cannot go on the relay app's App URL, which is where you would expect
-   it: Miro normalises `sdkUri` and drops query parameters from it, so the
-   setting never arrives. The relay page states which origins it accepts, and a
-   refused embed shows the reason rather than timing out.
+   It lives here rather than on the relay app's App URL — which is where you
+   might expect it — because `.env` is the one place nothing else rewrites, and
+   because the terminal server needs the value too. The relay page states which
+   origins it accepts, and a refused embed shows the reason rather than timing
+   out.
 
 3. **Click the relay app's icon once.** A second app's headless iframe is only
    reliably loaded on a cold board load after the user has opened it at least

@@ -60,10 +60,14 @@
   // published embeds simply cannot reach the relay — a closed door rather than
   // an open one, which is the right way round for a default.
   // Which origins may ask this relay to open a session — i.e. where the embed
-  // is published. Fetched from the terminal server, same-origin, because that
-  // is the only place it can come from: Miro normalises an app's sdkUri and
-  // drops query parameters, so configuring it on the App URL does not survive.
-  // Set EMBED_ORIGINS in backend/.env.
+  // is published. Fetched from the terminal server, same-origin.
+  //
+  // It lives in backend/.env rather than on this app's App URL because that is
+  // the one place nothing else rewrites, and because it survives the App URL
+  // being changed. (An earlier version read it from a query parameter on the
+  // sdkUri and appeared not to receive it; that may well have been a stale
+  // frame rather than Miro dropping it. Either way .env is the better home for
+  // something the server also needs to know.)
   var ALLOWED_EMBED_ORIGINS = [
     'http://localhost:5173',
     'https://localhost:5173',
