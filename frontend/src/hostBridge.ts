@@ -110,6 +110,14 @@ interface ConnectedContext {
   input: string;
   named: Record<string, string>;
   viewport: unknown;
+  /** Read from the SDK here rather than passed to the terminal in its URL.
+   * A URL is stamped once at creation and then frozen in board content, so a
+   * renamed board kept its old name for the life of the embed, and an embed
+   * made before those parameters existed had no board identity at all. This
+   * iframe is the one surface with a working SDK, and it is already being asked
+   * for the connected items, so the board it is on costs nothing to include. */
+  boardName: string;
+  boardUrl: string;
 }
 
 interface EmbedWidget {
@@ -294,7 +302,14 @@ async function readConnectedContext(embed: EmbedWidget): Promise<ConnectedContex
     if (label) named[label] = /^link/i.test(label) ? link : text ?? link;
     else inputParts.push(text ?? link);
   }
-  return { input: inputParts.join('\n'), named, viewport };
+  const boardName = (boardInfo as unknown as { title?: string }).title || boardId;
+  return {
+    input: inputParts.join('\n'),
+    named,
+    viewport,
+    boardName,
+    boardUrl: `https://miro.com/app/board/${boardId}/`,
+  };
 }
 
 export interface BridgeState {

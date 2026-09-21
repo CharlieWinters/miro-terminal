@@ -483,7 +483,7 @@ app.post('/api/pty/:sid/input', (req, res) => {
 // Store / update context for an embed (input text + named tokens + optional viewport)
 app.post('/api/context/:embedId', (req, res) => {
   const { embedId } = req.params;
-  const { input, named, viewport } = req.body;
+  const { input, named, viewport, boardName, boardUrl } = req.body;
 
   if (typeof input !== 'string') {
     return res.status(400).json({ error: 'input must be a string' });
@@ -497,7 +497,16 @@ app.post('/api/context/:embedId', (req, res) => {
     : null;
 
   const namedTokens = named || {};
-  contextStore.set(embedId, { input, named: namedTokens, viewport: viewportData, updatedAt: Date.now() });
+  contextStore.set(embedId, {
+    input,
+    named: namedTokens,
+    viewport: viewportData,
+    // Whitelisted like the rest: the terminal reads these as [BOARD_NAME] and
+    // [BOARD_URL], so they are data from the board, not free-form passthrough.
+    boardName: typeof boardName === 'string' ? boardName : null,
+    boardUrl: typeof boardUrl === 'string' ? boardUrl : null,
+    updatedAt: Date.now(),
+  });
   console.log(`[context] POST embedId=${embedId} input=${input.length} char(s), ${Object.keys(namedTokens).length} named token(s)`, viewportData ? ', viewport' : '');
   res.json({ ok: true });
 });
@@ -521,7 +530,7 @@ app.get('/api/context/:embedId', (req, res) => {
 
   if (!ctx) {
     console.log(`[context] GET embedId=${embedId} → no context (empty)`);
-    return res.json({ input: '', named: {}, viewport: null, updatedAt: null });
+    return res.json({ input: '', named: {}, viewport: null, boardName: null, boardUrl: null, updatedAt: null });
   }
 
   console.log(`[context] GET embedId=${embedId} → input=${ctx.input.length} char(s), ${Object.keys(ctx.named).length} named token(s)`);

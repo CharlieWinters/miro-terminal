@@ -188,7 +188,7 @@ terminal embed with a connector, then use it as a variable:
 | `[INPUT]` | every uncaptioned connector's item, newline-joined |
 | `[LABEL]` | the item whose connector caption is `LABEL` |
 | `[LINK_1]` | that item's board link rather than its content |
-| `[VIEWPORT]`, `[BOARD_ID]`, `[BOARD_NAME]`, `[CURRENT_BOARD]` | board context |
+| `[VIEWPORT]`, `[BOARD_NAME]`, `[BOARD_URL]` | board context, read live from the board |
 
 Every token is `[BRACKETED]`, connected items and board context alike. The
 angle-bracket spellings some of these used to have still resolve, but are not
