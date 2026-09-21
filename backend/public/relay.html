@@ -162,6 +162,7 @@
    * is only raised once every few seconds; the request itself is always kept. */
   function requestApproval(sid, embedId, source, origin, hints) {
     var known = Object.prototype.hasOwnProperty.call(pending, sid);
+    requestApproval.wasKnown = known;
     hints = hints || {};
     pending[sid] = {
       sid: sid, embedId: embedId, source: source, origin: origin,
@@ -333,6 +334,11 @@
         throw new Error('the person at this machine declined live mode for this session');
       }
       requestApproval(sid, embedId, source, origin, hints);
+      // Say it once. Every reply here is a close as far as the embed is
+      // concerned, and a close costs it a reconnect, so repeating this on each
+      // retry burned its whole budget while the person was still reading the
+      // panel. Silence just leaves its own retry timer running.
+      if (requestApproval.wasKnown) return;
       throw new Error('waiting for permission on the host\'s screen');
     }
 

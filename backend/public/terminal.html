@@ -661,6 +661,20 @@
       };
 
       function connect() {
+        // Tear the previous transport down first. Each one registers a window
+        // message listener in connect() and only removes it in close(), so a
+        // reconnect that skipped this left the old listener attached — and the
+        // next frame from the relay was then handled once per listener. Typing
+        // one character showed it six times, which is the initial connection
+        // plus maxReconnectAttempts.
+        //
+        // It took the approval panel to make this visible. A close used to mean
+        // a genuine disconnect and was rare; now every refusal while somebody
+        // decides is a close, so the budget is spent in seconds and the leak
+        // compounds before anyone has clicked anything.
+        if (currentTransport) {
+          try { currentTransport.close(); } catch (e) {}
+        }
         transport =
           TRANSPORT_MODE === 'relay'
             ? createRelayTransport(sessionId, transportHandlers)
