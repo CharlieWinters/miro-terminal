@@ -238,7 +238,16 @@ function createSession(sid, cwd, name) {
   delete ptyEnv.SIGN_SECRET;
 
   const ptyProcess = pty.spawn(shell, [], {
-    name: name || 'xterm-color',
+    // This is TERM, not a label. node-pty's `name` option sets $TERM in the
+    // child, and the session's human name was being passed straight into it —
+    // so naming a terminal "deploy" gave the shell TERM=deploy, for which no
+    // terminfo entry exists. Anything that calls setupterm then fails: python
+    // drops out of pyrepl, and a full-screen TUI either degrades or misreads
+    // its own input. The session's name is a label and lives on `session.name`.
+    //
+    // xterm-256color rather than the old xterm-color fallback, because that is
+    // what xterm.js actually is.
+    name: 'xterm-256color',
     cols: 80,
     rows: 24,
     cwd: workingDir,
