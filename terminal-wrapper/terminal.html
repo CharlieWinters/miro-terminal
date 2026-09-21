@@ -457,12 +457,19 @@
       }
 
       function requestOpen() {
+        // cwd and name are hints for one case only: the session is gone (the
+        // server restarted) and the person at the machine chooses to recreate
+        // it. The relay ignores both otherwise, and never acts on either
+        // without a human clicking. They come from this page's URL, which is
+        // board content, so they are shown in the approval panel before
+        // anything uses them, and the server confines cwd to ALLOWED_ROOT.
         post({
           type: 'mt-relay:open',
           v: 1,
           sid: sessionId,
           embedId: embedId,
           cwd: currentSettings && currentSettings.cwd ? currentSettings.cwd : undefined,
+          name: name || undefined,
         });
       }
 
