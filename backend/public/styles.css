@@ -265,3 +265,20 @@ body {
 #token-help dd { margin: 0; opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #token-help p { margin: 8px 0 0; opacity: 0.6; line-height: 1.5; }
 #token-help .none { opacity: 0.5; font-style: italic; }
+
+/* A token in the help panel is a button: clicking types its value in at the
+ * cursor, which is the path that works regardless of what is running. */
+#token-help button.ins {
+  font: inherit;
+  font-family: ui-monospace, Menlo, monospace;
+  color: #ce9178;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin: -1px -4px;
+  cursor: pointer;
+  text-align: left;
+}
+#token-help button.ins:hover,
+#token-help button.ins:focus-visible { background: #3c3c3c; border-color: #5a5a5a; outline: none; }

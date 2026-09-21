@@ -962,43 +962,78 @@
           return t.length > 70 ? t.slice(0, 70) + '…' : t;
         };
 
-        function rows(pairs) {
-          if (!pairs.length) return '<p class="none">none connected to this terminal</p>';
-          return '<dl>' + pairs.map(([k, v]) =>
-            '<dt>' + esc(k) + '</dt><dd>' + esc(preview(v) || '—') + '</dd>').join('') + '</dl>';
+        // Values behind the buttons, by index, so a token's text never has to
+        // survive a trip through an HTML attribute.
+        let insertable = [];
+
+        function rows(pairs, empty) {
+          if (!pairs.length) return '<p class="none">' + empty + '</p>';
+          return '<dl>' + pairs.map(([k, v]) => {
+            const i = insertable.push(v) - 1;
+            return '<dt><button class="ins" data-i="' + i +
+              '" title="Insert this value at the cursor">' + esc(k) + '</button></dt>' +
+              '<dd>' + esc(preview(v) || '—') + '</dd>';
+          }).join('') + '</dl>';
         }
 
-        const BUILTINS = [
-          ['[INPUT]', 'every uncaptioned connector\u2019s item, joined'],
-          ['[VIEWPORT]', 'the current viewport, as JSON'],
-          ['[BOARD_ID]', 'this board\u2019s id'],
-          ['[BOARD_NAME]', 'this board\u2019s name'],
-          ['[CURRENT_BOARD]', 'this board\u2019s URL'],
-        ];
-
         const FOOTER =
-          '<p>Label a connector by double-clicking the line on the board, then type ' +
-          'its caption in brackets. A caption starting with "link" gives the item\u2019s ' +
-          'board link instead of its text. Expanding shows you the finished command on ' +
-          'the prompt line; it does not run until you press Enter again.</p>';
+          '<p><b>Click a token to insert its value</b> where your cursor is. Typing the ' +
+          'token and pressing Enter expands it too, but that has to replace the whole ' +
+          'line, and a full-screen program — an agent, an editor — edits its own input ' +
+          'and may not cooperate. Clicking just types the text, so anything accepts it.</p>' +
+          '<p>Label a connector by double-clicking the line on the board, then use its ' +
+          'caption in brackets. A caption starting with "link" gives the item\u2019s board ' +
+          'link instead of its text.</p>';
 
-        function draw(body) {
-          panel.innerHTML = '<h4>Connected to this terminal</h4>' + body +
-            '<h4>Always available</h4>' + rows(BUILTINS) + FOOTER;
+        function draw(connectedBody, builtinBody) {
+          panel.innerHTML = '<h4>Connected to this terminal</h4>' + connectedBody +
+            (builtinBody ? '<h4>Always available</h4>' + builtinBody : '') + FOOTER;
+        }
+
+        /** Types the value in, exactly as if the operator had.
+         *
+         * No Enter to intercept and no line to reconstruct, which is the whole
+         * point: the Enter path has to guess what is on a line it cannot read
+         * and then replace it, and every program does its own line editing. */
+        function insertAtCursor(raw) {
+          const text = sanitiseSubstitution(raw);
+          if (!text || !currentTransport || !currentTransport.isOpen()) return;
+          // Keep the mirror in step — this is indistinguishable from typing.
+          inputBuffer = inputBuffer.slice(0, cursor) + text + inputBuffer.slice(cursor);
+          cursor += text.length;
+          currentTransport.send({ type: 'input', data: text });
+          close();
         }
 
         async function open() {
           panel.hidden = false;
           btn.setAttribute('aria-expanded', 'true');
-          draw('<p class="none">reading the board…</p>');
+          insertable = [];
+          draw('<p class="none">reading the board…</p>', '');
           try {
             const ctx = await requestContext();
-            const pairs = Object.keys(ctx.named || {}).sort()
+            insertable = [];
+            const connected = Object.keys(ctx.named || {}).sort()
               .map((k) => ['[' + k + ']', ctx.named[k]]);
-            if (ctx.input) pairs.unshift(['[INPUT]', ctx.input]);
-            draw(rows(pairs));
+            if (ctx.input) connected.unshift(['[INPUT]', ctx.input]);
+
+            const sync = syncTokens();
+            const vp = ctx.viewport && typeof ctx.viewport === 'object'
+              ? JSON.stringify({ x: ctx.viewport.x, y: ctx.viewport.y,
+                                 width: ctx.viewport.width, height: ctx.viewport.height })
+              : null;
+            const builtins = [
+              ['[VIEWPORT]', vp],
+              ['[BOARD_ID]', sync.BOARD_ID],
+              ['[BOARD_NAME]', sync.BOARD_NAME],
+              ['[CURRENT_BOARD]', sync.CURRENT_BOARD],
+            ].filter(([, v]) => v && String(v).indexOf('[no-') !== 0);
+
+            draw(rows(connected, 'none connected to this terminal'),
+                 rows(builtins, 'nothing to show'));
           } catch (e) {
-            draw('<p class="none">could not read the board from here</p>');
+            insertable = [];
+            draw('<p class="none">could not read the board from here</p>', '');
           }
         }
 
@@ -1007,6 +1042,13 @@
           btn.setAttribute('aria-expanded', 'false');
           if (currentTerm) { try { currentTerm.focus(); } catch (e) {} }
         }
+
+        panel.addEventListener('click', (e) => {
+          const b = e.target.closest('button[data-i]');
+          if (!b) return;
+          const v = insertable[Number(b.dataset.i)];
+          if (v != null) insertAtCursor(String(v));
+        });
 
         btn.addEventListener('click', () => (panel.hidden ? open() : close()));
         document.addEventListener('keydown', (e) => {
