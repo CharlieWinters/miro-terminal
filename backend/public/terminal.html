@@ -24,7 +24,13 @@
          having was telling you which session and board you were looking at;
          that is a line, not a modal. -->
     <span id="identity" title="This terminal's session and board"></span>
+    <button id="token-help-btn" type="button" aria-expanded="false"
+            title="Board items you can type into this terminal">i</button>
   </div>
+  <!-- Populated on open, not on load: the list is mostly the connectors
+       attached to THIS embed right now, and reading the board costs a round
+       trip to the app iframe. -->
+  <div id="token-help" hidden></div>
   <div id="terminal-container"></div>
   
   <script type="module">
@@ -934,6 +940,80 @@
           }
         });
       }
+
+      /**
+       * The token list, read rather than documented.
+       *
+       * Which [LABEL]s exist is a property of the connectors attached to THIS
+       * embed, so no fixed help text can answer it — and the terminal is the
+       * one place you would think to ask, having nothing else on screen. The
+       * built-ins are listed for completeness; the labelled ones, with a
+       * preview of what they currently hold, are the point.
+       */
+      function setupTokenHelp() {
+        const btn = document.getElementById('token-help-btn');
+        const panel = document.getElementById('token-help');
+        if (!btn || !panel) return;
+
+        const esc = (v) => String(v == null ? '' : v)
+          .replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        const preview = (v) => {
+          const t = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+          return t.length > 70 ? t.slice(0, 70) + '…' : t;
+        };
+
+        function rows(pairs) {
+          if (!pairs.length) return '<p class="none">none connected to this terminal</p>';
+          return '<dl>' + pairs.map(([k, v]) =>
+            '<dt>' + esc(k) + '</dt><dd>' + esc(preview(v) || '—') + '</dd>').join('') + '</dl>';
+        }
+
+        const BUILTINS = [
+          ['[INPUT]', 'every uncaptioned connector\u2019s item, joined'],
+          ['viewport', 'the current viewport, as JSON'],
+          ['board_id', 'this board\u2019s id'],
+          ['board_name', 'this board\u2019s name'],
+          ['current_board', 'this board\u2019s URL'],
+        ];
+
+        const FOOTER =
+          '<p>Label a connector by double-clicking the line on the board, then type ' +
+          'its caption in brackets. A caption starting with "link" gives the item\u2019s ' +
+          'board link instead of its text. Expanding shows you the finished command on ' +
+          'the prompt line; it does not run until you press Enter again.</p>';
+
+        function draw(body) {
+          panel.innerHTML = '<h4>Connected to this terminal</h4>' + body +
+            '<h4>Always available</h4>' + rows(BUILTINS) + FOOTER;
+        }
+
+        async function open() {
+          panel.hidden = false;
+          btn.setAttribute('aria-expanded', 'true');
+          draw('<p class="none">reading the board…</p>');
+          try {
+            const ctx = await requestContext();
+            const pairs = Object.keys(ctx.named || {}).sort()
+              .map((k) => ['[' + k + ']', ctx.named[k]]);
+            if (ctx.input) pairs.unshift(['[INPUT]', ctx.input]);
+            draw(rows(pairs));
+          } catch (e) {
+            draw('<p class="none">could not read the board from here</p>');
+          }
+        }
+
+        function close() {
+          panel.hidden = true;
+          btn.setAttribute('aria-expanded', 'false');
+          if (currentTerm) { try { currentTerm.focus(); } catch (e) {} }
+        }
+
+        btn.addEventListener('click', () => (panel.hidden ? open() : close()));
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && !panel.hidden) close();
+        });
+      }
+      setupTokenHelp();
 
       async function requestContext() {
         if (!embedId) {
