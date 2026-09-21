@@ -1281,6 +1281,22 @@
        * it is now a visible risk rather than a silent one. */
       let awaitingConfirm = false;
 
+      /** Where the next character lands in inputBuffer.
+       *
+       * inputBuffer is a mirror of the line the shell is editing, rebuilt from
+       * keystrokes, because nothing can read the real one back. A mirror that
+       * only ever appends is right exactly until the cursor moves. */
+      let cursor = 0;
+
+      /** Control sequences that move the cursor without altering the line.
+       * Values are a delta, or 'home'/'end'. */
+      const CURSOR_MOVES = {
+        '\x1b[D': -1, '\x1bOD': -1,          // Left
+        '\x1b[C': 1,  '\x1bOC': 1,           // Right
+        '\x1b[H': 'home', '\x1bOH': 'home', '\x1b[1~': 'home', '\x01': 'home',
+        '\x1b[F': 'end',  '\x1bOF': 'end',  '\x1b[4~': 'end',  '\x05': 'end',
+      };
+
       // Handle terminal input with variable expansion
       term.onData(async (data) => {
         if (!transport || !transport.isOpen()) {
@@ -1301,6 +1317,7 @@
           if (awaitingConfirm) {
             awaitingConfirm = false;
             inputBuffer = '';
+            cursor = 0;
             transport.send({ type: 'input', data: '\r' });
             return;
           }
@@ -1316,6 +1333,7 @@
                 transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
                 transport.send({ type: 'input', data: expanded });
                 inputBuffer = expanded;
+                cursor = expanded.length;
                 awaitingConfirm = true;
                 return;
               } catch (error) {
@@ -1326,6 +1344,7 @@
                 transport.send({ type: 'input', data: '\x15' });
                 transport.send({ type: 'input', data: fallback });
                 inputBuffer = fallback;
+                cursor = fallback.length;
                 awaitingConfirm = true;
                 return;
               } finally {
@@ -1339,6 +1358,7 @@
               transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
               transport.send({ type: 'input', data: expanded });
               inputBuffer = expanded;
+              cursor = expanded.length;
               awaitingConfirm = true;
               return;
             }
@@ -1349,19 +1369,46 @@
           
           // Reset buffer
           inputBuffer = '';
+          cursor = 0;
         } else if (data === '\x7f' || data === '\b') {
-          // Backspace - remove last character from buffer
-          inputBuffer = inputBuffer.slice(0, -1);
+          // Backspace - delete before the cursor, not off the end.
+          if (cursor > 0) {
+            inputBuffer = inputBuffer.slice(0, cursor - 1) + inputBuffer.slice(cursor);
+            cursor--;
+          }
           transport.send({ type: 'input', data });
         } else if (data.charCodeAt(0) >= 32 || data === '\t') {
-          // Printable character or tab - add to buffer
-          inputBuffer += data;
+          // Printable - insert AT the cursor. Appending was wrong as soon as
+          // anything moved the cursor, which is most of the time in a TUI.
+          inputBuffer = inputBuffer.slice(0, cursor) + data + inputBuffer.slice(cursor);
+          cursor += data.length;
+          transport.send({ type: 'input', data });
+        } else if (CURSOR_MOVES[data] !== undefined) {
+          // Moving the cursor does not change the line, so the mirror survives.
+          //
+          // This is the whole of the bug where a token stopped expanding once an
+          // agent was running. Every control sequence used to clear the buffer,
+          // and an arrow key is a control sequence — so at a plain prompt, where
+          // you type straight through, expansion worked, and inside a TUI, where
+          // you arrow around constantly, Enter found an empty buffer and sent
+          // the line through untouched. It failed silently and only in the case
+          // people actually use.
+          cursor = CURSOR_MOVES[data] === 'home' ? 0
+            : CURSOR_MOVES[data] === 'end' ? inputBuffer.length
+            : Math.max(0, Math.min(inputBuffer.length, cursor + CURSOR_MOVES[data]));
+          transport.send({ type: 'input', data });
+        } else if (data === '\x0b') {
+          inputBuffer = inputBuffer.slice(0, cursor);   // Ctrl+K
           transport.send({ type: 'input', data });
         } else {
-          // Control characters (Ctrl+C, etc.) - send directly, reset buffer.
-          // Ctrl+C on a pending expansion abandons it, so stop expecting a
-          // confirming Enter.
+          // Everything else changes the line in a way this cannot follow —
+          // Ctrl+C, Ctrl+U, Ctrl+W, and history recall on Up/Down, where the
+          // shell replaces the line with text we never saw. Drop the mirror
+          // rather than keep a wrong one: a missed expansion is recoverable,
+          // and expanding against a stale buffer would rewrite the line with
+          // something the operator never typed.
           inputBuffer = '';
+          cursor = 0;
           awaitingConfirm = false;
           transport.send({ type: 'input', data });
         }
