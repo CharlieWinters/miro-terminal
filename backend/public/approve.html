@@ -22,6 +22,8 @@
   ul { list-style: none; margin: 8px 0 0; padding: 0; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .empty { color: #888; }
+  .warn { margin: 0 0 10px; color: #9b4a08; background: #fff5ed;
+          border-radius: 6px; padding: 8px 10px; }
 </style>
 </head>
 <body>
@@ -56,17 +58,37 @@
       p.innerHTML = '<p class="empty">Nothing waiting. You can close this panel.</p>';
     } else {
       p.innerHTML = pend.map(function (r) {
-        return '<div class="req"><dl>' +
+        var rows =
           '<dt>Session</dt><dd>' + esc(r.sid) + '</dd>' +
           '<dt>Embed</dt><dd>' + esc(r.embedId || 'unnamed') + '</dd>' +
-          '<dt>Asked by</dt><dd>' + esc(r.origin) + '</dd>' +
+          '<dt>Asked by</dt><dd>' + esc(r.origin) + '</dd>';
+
+        if (!r.missing) {
+          return '<div class="req"><dl>' + rows + '</dl>' +
+            '<button class="primary" data-allow="' + esc(r.sid) + '">Allow</button>' +
+            '<button data-deny="' + esc(r.sid) + '">Deny</button></div>';
+        }
+
+        // The shell is gone, which almost always means the terminal server was
+        // restarted. Recreating starts a NEW shell — the old one and everything
+        // in it is not coming back — so the directory it will start in is shown
+        // rather than assumed, because it comes from the embed's URL and that
+        // is board content.
+        return '<div class="req"><dl>' + rows +
+          '<dt>Directory</dt><dd>' + esc(r.cwd || 'your home directory') + '</dd>' +
           '</dl>' +
-          '<button class="primary" data-allow="' + esc(r.sid) + '">Allow</button>' +
-          '<button data-deny="' + esc(r.sid) + '">Deny</button></div>';
+          '<p class="warn">This session is gone, most likely because the terminal ' +
+          'server restarted. Recreating starts a new shell in the directory above. ' +
+          'The previous one and its scrollback cannot be recovered.</p>' +
+          '<button class="primary" data-recreate="' + esc(r.sid) + '">Recreate</button>' +
+          '<button data-deny="' + esc(r.sid) + '">Dismiss</button></div>';
       }).join('');
-      if (pend.length > 1) {
+
+      // Only the permission requests. Recreating shells is not a bulk action.
+      var needPermission = pend.filter(function (r) { return !r.missing; }).length;
+      if (needPermission > 1) {
         p.insertAdjacentHTML('beforeend',
-          '<button class="primary" id="allow-all">Allow all ' + pend.length + '</button>');
+          '<button class="primary" id="allow-all">Allow all ' + needPermission + '</button>');
       }
     }
 
@@ -84,8 +106,9 @@
     var t = e.target;
     if (!t || t.tagName !== 'BUTTON') return;
     if (t.id === 'allow-all') { bc.postMessage({ type: 'allow-all' }); return; }
-    if (t.dataset.allow)  bc.postMessage({ type: 'decide', sid: t.dataset.allow, allow: true });
-    if (t.dataset.deny)   bc.postMessage({ type: 'decide', sid: t.dataset.deny, allow: false });
+    if (t.dataset.allow)    bc.postMessage({ type: 'decide', sid: t.dataset.allow, action: 'allow' });
+    if (t.dataset.deny)     bc.postMessage({ type: 'decide', sid: t.dataset.deny, action: 'deny' });
+    if (t.dataset.recreate) bc.postMessage({ type: 'decide', sid: t.dataset.recreate, action: 'recreate' });
     if (t.dataset.revoke) bc.postMessage({ type: 'revoke', sid: t.dataset.revoke });
   });
 

@@ -250,6 +250,9 @@ function createSession(sid, cwd, name) {
     clients: [],
     lastSeen: Date.now(),
     name: name || 'terminal',
+    // Recorded because it was already being reported and never set: the
+    // GET /api/pty/:sid handler returns session.cwd, which was always null.
+    cwd: workingDir,
     // Raw output buffer (capped at SCROLLBACK_BYTES), replayed to any new
     // client on connect so reopening the embed picks up where it left off
     // instead of showing a blank cursor. ANSI codes and all — xterm.js
