@@ -970,10 +970,10 @@
 
         const BUILTINS = [
           ['[INPUT]', 'every uncaptioned connector\u2019s item, joined'],
-          ['viewport', 'the current viewport, as JSON'],
-          ['board_id', 'this board\u2019s id'],
-          ['board_name', 'this board\u2019s name'],
-          ['current_board', 'this board\u2019s URL'],
+          ['[VIEWPORT]', 'the current viewport, as JSON'],
+          ['[BOARD_ID]', 'this board\u2019s id'],
+          ['[BOARD_NAME]', 'this board\u2019s name'],
+          ['[CURRENT_BOARD]', 'this board\u2019s URL'],
         ];
 
         const FOOTER =
@@ -1150,28 +1150,49 @@
         }
         return output;
       }
-      function expandSyncVariables(input) {
-        let output = input;
-        
-        // Use current settings for board info
+      /** The tokens answerable without reading the board: they come from this
+       * page's own URL. Everything else needs the app iframe. */
+      const SYNC_TOKEN_NAMES = ['CURRENT_BOARD', 'BOARD_ID', 'BOARD_NAME', 'SELECTED_ITEMS'];
+      function syncTokens() {
         const { boardUrl, boardId, boardName } = currentSettings;
-        
-        // Replace <current_board> with full Miro board URL (brackets = shell-safe)
-        output = output.replace(/<current_board>/g, boardUrl || '[no-board-url]');
-        
-        // Replace <board_id> with just the board ID
-        output = output.replace(/<board_id>/g, boardId || '[no-board-id]');
-        
-        // Replace <board_name> with board name
-        output = output.replace(/<board_name>/g, boardName || '[no-board-name]');
-        
-        // Replace <selected_items> - not available in embed context
-        output = output.replace(/<selected_items>/g, '[selection-not-available]');
-        
+        return {
+          CURRENT_BOARD: boardUrl || '[no-board-url]',
+          BOARD_ID: boardId || '[no-board-id]',
+          BOARD_NAME: boardName || '[no-board-name]',
+          SELECTED_ITEMS: '[selection-not-available]',
+        };
+      }
+
+      /** The angle-bracket spellings these used to have.
+       *
+       * [INPUT] was <input> once and was changed so that connected-item tokens
+       * all looked alike; the board tokens were left behind, so the syntax you
+       * had to remember depended on which kind of thing you were asking for.
+       * They are all brackets now.
+       *
+       * The old spellings still resolve, deliberately and undocumented. Nothing
+       * persists them — they are typed at a prompt, not stored on the board —
+       * so this is purely for muscle memory, and it is worth the few lines
+       * because an unrecognised <name> does not sit there looking wrong: the
+       * shell reads it as a redirect. */
+      const LEGACY_ANGLE_TOKENS = {
+        '<current_board>': 'CURRENT_BOARD', '<board_id>': 'BOARD_ID',
+        '<board_name>': 'BOARD_NAME', '<selected_items>': 'SELECTED_ITEMS',
+        '<viewport>': 'VIEWPORT', '<input>': 'INPUT',
+      };
+      function rewriteLegacyTokens(input) {
+        let output = input;
+        Object.keys(LEGACY_ANGLE_TOKENS).forEach(function (old) {
+          output = output.split(old).join('[' + LEGACY_ANGLE_TOKENS[old] + ']');
+        });
+        return output;
+      }
+
+      function expandSyncVariables(input) {
+        const output = expandNamedTokens(input, syncTokens());
         if (output !== input) {
           console.log('Sync variable expansion:', { input, output });
         }
-        
         return output;
       }
 
@@ -1180,10 +1201,10 @@
        * send raw <viewport> or [INPUT]/[LABEL] to the shell (e.g. fallback on error).
        */
       function expandSyncVariablesSafe(input) {
-        let output = expandSyncVariables(input);
-        output = output.replace(/<viewport>/gi, '[no-viewport]');
-        output = output.replace(/\[INPUT\]/g, '[no-connected-docs]');
-        return output;
+        const lookup = syncTokens();
+        lookup.INPUT = '[no-connected-docs]';
+        lookup.VIEWPORT = '[no-viewport]';
+        return expandNamedTokens(input, lookup);
       }
 
       /**
@@ -1191,31 +1212,32 @@
        * Returns a promise that resolves with the fully expanded string
        */
       async function expandVariables(input) {
-        const hasNamedTokens = input.search(NAMED_TOKEN_PATTERN) !== -1;
-        const needsContext = /<viewport>/i.test(input) || hasNamedTokens;
-        let output = expandSyncVariables(input);
+        const rewritten = rewriteLegacyTokens(input);
+        let output = expandSyncVariables(rewritten);
 
-        if (needsContext) {
+        if (containsAsyncVariables(rewritten)) {
           try {
             const { input: connectedText, named, viewport } = await requestContext();
 
-            if (/<viewport>/i.test(output)) {
-              const viewportStr = viewport && typeof viewport === 'object'
-                ? JSON.stringify({ x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height })
-                : '[no-viewport]';
-              output = output.replace(/<viewport>/gi, viewportStr);
-            }
-            // INPUT is a built-in token (the unlabelled-items blob); an explicit
-            // connector caption literally named "INPUT" takes priority over it.
-            const lookup = { INPUT: sanitiseSubstitution(connectedText) || '[no-connected-docs]' };
+            // One lookup, one pass. The board tokens, the connected-items blob
+            // and the per-connector labels used to be three mechanisms with
+            // two syntaxes between them.
+            const lookup = syncTokens();
+            lookup.INPUT = sanitiseSubstitution(connectedText) || '[no-connected-docs]';
+            lookup.VIEWPORT = viewport && typeof viewport === 'object'
+              ? JSON.stringify({ x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height })
+              : '[no-viewport]';
+            // A connector caption wins over a built-in of the same name, which
+            // is how [INPUT] has always behaved.
             Object.keys(named || {}).forEach(function (k) {
               lookup[k] = sanitiseSubstitution(named[k]);
             });
             output = expandNamedTokens(output, lookup);
           } catch (error) {
             console.error('Failed to fetch context:', error);
-            output = output.replace(/\[INPUT\]/g, '[error-fetching-input]');
-            output = output.replace(/<viewport>/gi, '[error-fetching-viewport]');
+            output = expandNamedTokens(output, {
+              INPUT: '[error-fetching-input]', VIEWPORT: '[error-fetching-viewport]',
+            });
           }
         }
 
@@ -1226,14 +1248,19 @@
         return output;
       }
 
-      // Check if input contains variables: <variable_name> or [LABEL]/[INPUT]
       function containsVariables(input) {
-        return /<[a-z_]+>/i.test(input) || input.search(NAMED_TOKEN_PATTERN) !== -1;
+        return rewriteLegacyTokens(input).search(/\[([A-Za-z][A-Za-z0-9_]*)\]/) !== -1;
       }
 
-      // Check if input contains async variables that need fetching
+      /** Only a token we cannot answer from this page's URL is worth a round
+       * trip to the app iframe. A bare [BOARD_ID] should not read the board. */
       function containsAsyncVariables(input) {
-        return /<viewport>/i.test(input) || input.search(NAMED_TOKEN_PATTERN) !== -1;
+        const re = /\[([A-Za-z][A-Za-z0-9_]*)\]/g;
+        let m;
+        while ((m = re.exec(rewriteLegacyTokens(input))) !== null) {
+          if (SYNC_TOKEN_NAMES.indexOf(m[1]) === -1) return true;
+        }
+        return false;
       }
 
       // Track if we're currently processing an async expansion
@@ -1295,7 +1322,7 @@
                 console.error('Error expanding variables:', error);
                 // Never send raw <...> to shell (causes redirection parse errors).
                 // Clear line and send safe expansion (async vars become placeholders).
-                const fallback = expandSyncVariablesSafe(inputBuffer);
+                const fallback = expandSyncVariablesSafe(rewriteLegacyTokens(inputBuffer));
                 transport.send({ type: 'input', data: '\x15' });
                 transport.send({ type: 'input', data: fallback });
                 inputBuffer = fallback;
@@ -1305,8 +1332,8 @@
                 isProcessingAsync = false;
               }
             } else {
-              // Sync-only variables (safe expand so we never send raw <viewport>/[INPUT] to shell)
-              const expanded = expandSyncVariablesSafe(inputBuffer);
+              // Sync-only: nothing here needs the board read.
+              const expanded = expandSyncVariablesSafe(rewriteLegacyTokens(inputBuffer));
 
               // Replace the line with the expansion and leave it there.
               transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
