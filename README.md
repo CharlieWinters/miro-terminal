@@ -8,7 +8,12 @@ the board itself. Only the person whose machine is running it can type into it.
 That asymmetry is not a policy the app enforces; it is a consequence of how
 browsers work, which is the most reliable kind.
 
-![no screenshot yet](#)
+![Creating a terminal on a board, allowing it to go live, and running an agent
+in it](docs/tutorial.gif)
+
+*Opening the panel, creating a terminal, allowing it from the relay's
+permissions panel, and then running an agent inside the embed — 55 seconds,
+unedited.*
 
 ## The one thing to understand first
 
