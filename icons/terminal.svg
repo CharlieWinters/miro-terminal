@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"
-     color="#050038" fill="none" stroke="currentColor" stroke-width="2"
+     fill="none" stroke="#050038" stroke-width="2"
      stroke-linecap="round" stroke-linejoin="round">
   <!-- Miro Terminal. A terminal window: prompt chevron and cursor rule.
-       Stroked with currentColor so Miro can tint it, but with color set here as
-       a fallback: an SVG loaded through <img> cannot inherit anything from the
-       page, and currentColor with nothing to resolve against is black — which
-       is invisible on a dark toolbar. -->
+       One colour, stated explicitly. Miro converts a monochrome icon to indigo
+       #050038, so using that is a no-op rather than a preference, and it keeps
+       the file inside the "no more than 1 color" rule with nothing to resolve
+       at render time. No gradients; square; well under the 5000-byte limit. -->
   <rect x="2" y="4" width="20" height="16" rx="2.5"/>
   <path d="M7 10l2.5 2.5L7 15"/>
   <path d="M13 15h4"/>
