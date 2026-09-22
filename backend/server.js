@@ -63,8 +63,77 @@ if (trustProxy === '1' || trustProxy === 'true') {
   app.set('trust proxy', parseInt(trustProxy, 10));
 }
 
+// Is this a hostname this server is actually meant to answer as? Added
+// because nothing here ever looked at the Host header: the assumption was
+// that a public page cannot reach loopback, full stop, so whatever Host it
+// sent didn't matter. DNS rebinding breaks that assumption — a domain the
+// attacker controls can resolve to 127.0.0.1 after the browser's initial
+// same-origin checks pass, and the request that arrives here then has an
+// attacker-chosen Host header, not "localhost". Parsed with URL rather than
+// matched as a substring so that e.g. "localhost.evil.example" (which
+// contains "localhost" but isn't it) is rejected rather than let through.
+const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS || '')
+  .split(',')
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
+
+function isAllowedHost(hostHeader) {
+  if (!hostHeader) return false;
+  let hostname;
+  let port;
+  try {
+    const parsed = new URL(`http://${hostHeader}`);
+    hostname = parsed.hostname;
+    port = parsed.port; // '' when the header carried no :PORT
+  } catch {
+    return false;
+  }
+  // Operator-listed extras, compared as the whole host:port the browser sent.
+  // This is the proxy case SECURITY.md allows for: an authenticating reverse
+  // proxy in front forwards the Host it was reached at, which is neither
+  // loopback nor this server's own bind address, and without a way to name it
+  // the check below would refuse every request that setup produces.
+  if (ALLOWED_HOSTS.includes(hostHeader.toLowerCase())) return true;
+  if (port !== '' && port !== String(PORT)) return false;
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
+  if (hostname === '127.0.0.1' || hostname === '[::1]') return true;
+  // The container case: HOST was deliberately overridden away from loopback,
+  // so the host the server is actually reached at has to be allowed too.
+  if (HOST !== '127.0.0.1' && HOST !== '::1' && HOST !== 'localhost') {
+    const ownHost = HOST.includes(':') && !HOST.startsWith('[') ? `[${HOST}]` : HOST;
+    if (hostname === ownHost) return true;
+  }
+  return false;
+}
+
+// This server's own origins, for CORS purposes: whatever a same-origin
+// browser POST from a page this server itself serves (terminal.html,
+// relay.html, spawner.html) will present as Origin.
+const OWN_ORIGINS = ['localhost', '127.0.0.1', '[::1]'].flatMap((h) => [
+  `http://${h}:${PORT}`,
+  `https://${h}:${PORT}`,
+]);
+
+// The frontend dev-server origins this project actually ships against —
+// terminal-wrapper/index.html, hostBridge.ts, relay.html and spawner.html all
+// hardcode these same two Vite ports.
+const DEV_SERVER_ORIGINS = [
+  'http://localhost:5173',
+  'https://localhost:5173',
+  'http://localhost:4173',
+];
+
+// Explicit allowlist, replacing the old blanket rule that trusted *any*
+// origin whose hostname was localhost/127.0.0.1/[::1]/*.localhost, on *any*
+// port. That meant any other local dev server — any Vite app, any random
+// tool someone had running on the same machine — could send a cross-origin
+// XHR here and receive Access-Control-Allow-Origin back, because the check
+// never looked at the port. Now only this server's own origins, the two dev
+// ports this project ships, and whatever the operator explicitly lists in
+// CORS_ALLOWED_ORIGINS or EMBED_ORIGINS are trusted; miro.com is unaffected.
 function corsAllowOrigin(origin) {
   if (!origin) return false;
+  if (OWN_ORIGINS.includes(origin) || DEV_SERVER_ORIGINS.includes(origin)) return true;
   const extras = (process.env.CORS_ALLOWED_ORIGINS || '')
     .split(',')
     .map((s) => s.trim())
@@ -79,14 +148,39 @@ function corsAllowOrigin(origin) {
   if (EMBED_ORIGINS.includes(origin)) return true;
   try {
     const { hostname } = new URL(origin);
-    if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
-    if (hostname === '127.0.0.1' || hostname === '[::1]') return true;
     if (hostname === 'miro.com' || hostname.endsWith('.miro.com')) return true;
   } catch {
     return false;
   }
   return false;
 }
+
+// Host check, ahead of everything else including CORS: a request with a Host
+// header this server doesn't recognise is rejected outright, on the theory
+// that nothing downstream should even see it. See isAllowedHost() above for
+// why Host needs checking at all.
+app.use((req, res, next) => {
+  if (!isAllowedHost(req.headers.host)) {
+    return res.status(403).json({ error: 'invalid host' });
+  }
+  next();
+});
+
+// Origin check for state-changing requests. CORS (below) only stops a
+// browser from letting its JS *read* a cross-origin response — the request
+// itself is still sent and still executes before that check happens. A
+// GET/HEAD/OPTIONS is assumed side-effect-free so it's left to CORS to decide
+// who gets to read the answer; anything else that names an Origin we don't
+// allow is refused before it runs. Requests with no Origin header (curl,
+// same-origin navigations) aren't a cross-origin browser request in the
+// first place, so they pass on the Host check alone.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !corsAllowOrigin(origin)) {
+    return res.status(403).json({ error: 'origin not allowed' });
+  }
+  next();
+});
 
 // CORS middleware - Miro, local dev, GitHub Pages wrapper (health probe + future fetches)
 app.use((req, res, next) => {
@@ -214,17 +308,22 @@ function getShell() {
 
 function getCwd(requestedCwd) {
   if (!requestedCwd) {
-    return process.platform === 'win32' 
-      ? process.env.USERPROFILE 
-      : process.env.HOME || os.homedir();
+    // Default to ALLOWED_ROOT itself, not HOME: ALLOWED_ROOT already defaults
+    // to the home directory, so this changes nothing when it's left at its
+    // default, but it means a session's starting directory is always inside
+    // the root the docs say sessions are confined to, even if an operator has
+    // pointed ALLOWED_ROOT somewhere else.
+    return process.platform === 'win32'
+      ? (process.env.USERPROFILE || path.resolve(ALLOWED_ROOT))
+      : path.resolve(ALLOWED_ROOT);
   }
-  
-  try {
-    return safeJoin(ALLOWED_ROOT, requestedCwd);
-  } catch (e) {
-    console.warn('Invalid cwd requested, using default:', e.message);
-    return os.homedir();
-  }
+
+  // No fallback on a traversal attempt: this used to catch the error here and
+  // return os.homedir(), which is outside ALLOWED_ROOT whenever an operator
+  // has pointed ALLOWED_ROOT elsewhere, silently defeating the confinement
+  // the docs describe. Let it throw; the caller decides what "invalid cwd"
+  // means for that endpoint instead of a session getting created anyway.
+  return safeJoin(ALLOWED_ROOT, requestedCwd);
 }
 
 function createSession(sid, cwd, name) {
@@ -329,7 +428,19 @@ app.post('/api/pty/start', (req, res) => {
   
   if (!session) {
     sid = sid || generateSid();
-    session = createSession(sid, cwd, name);
+    // getCwd (inside createSession) now throws on a traversal attempt instead
+    // of silently falling back to a directory outside ALLOWED_ROOT, so a
+    // request like {"cwd":"../../../../etc"} has to be answered here, before
+    // any session or PTY exists, rather than let the fallback quietly start
+    // one somewhere the caller didn't ask for.
+    try {
+      session = createSession(sid, cwd, name);
+    } catch (e) {
+      if (e.message === 'Path traversal detected') {
+        return res.status(400).json({ error: 'cwd is outside ALLOWED_ROOT' });
+      }
+      throw e;
+    }
     console.log(`Created new session: ${sid}`);
   } else {
     session.lastSeen = Date.now();
@@ -378,11 +489,20 @@ app.post('/api/pty/:sid/attach', (req, res) => {
 
 app.delete('/api/pty/close', (req, res) => {
   const { sid } = req.query;
-  
+  // Accepted from the query string or the body: DELETE requests are commonly
+  // sent without a body, and this endpoint kills a live PTY, so it needs the
+  // same proof of possession /api/pty/:sid/input already requires rather than
+  // being reachable by anyone who can merely guess or observe a sid.
+  const token = req.query.token || (req.body && req.body.token);
+
   if (!sid) {
     return res.status(400).json({ error: 'sid is required' });
   }
-  
+
+  if (!verifyToken(sid, token)) {
+    return res.status(403).json({ error: 'Invalid or expired token' });
+  }
+
   const session = sessions.get(sid);
   if (!session) {
     return res.status(404).json({ error: 'Session not found' });
@@ -605,15 +725,38 @@ server.on('upgrade', (request, socket, head) => {
   const { pathname, query } = url.parse(request.url, true);
   
   if (pathname === '/pty') {
+    // Same rebinding concern as the HTTP Host middleware above, and the same
+    // fix: the upgrade handshake is plain HTTP up to this point, and nothing
+    // here previously looked at Host or Origin at all, only sid/token — so a
+    // page on an attacker-controlled domain that resolves to 127.0.0.1 could
+    // open the socket as long as it also had a valid token. Checked ahead of
+    // the token, and logged with a distinct reason, so a bad Host/Origin
+    // can't be mistaken for (or mask) a bad token.
+    if (!isAllowedHost(request.headers.host)) {
+      console.warn(`[ws] rejected upgrade: disallowed host ${request.headers.host}`);
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    const wsOrigin = request.headers.origin;
+    if (wsOrigin && !corsAllowOrigin(wsOrigin)) {
+      console.warn(`[ws] rejected upgrade: disallowed origin ${wsOrigin}`);
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     const { sid, token } = query;
-    
+
     if (!sid || !token) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
-    
+
     if (!verifyToken(sid, token)) {
+      console.warn(`[ws] rejected upgrade: invalid or expired token for sid ${sid}`);
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;

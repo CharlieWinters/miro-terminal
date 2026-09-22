@@ -15,6 +15,19 @@ in it](docs/tutorial.gif)
 permissions panel, and then running an agent inside the embed — 55 seconds,
 unedited.*
 
+![Four terminals on one board, each running a different coding agent](docs/multiple-agents.gif)
+
+*And there is no reason for them all to be the same thing. Four terminals on one
+board — Claude Code, Gemini, OpenAI Codex, and opencode driving a local Qwen3
+through Ollama — each a separate shell with its own working directory and its
+own scrollback on the board.*
+
+That is the part worth understanding. A terminal here is a widget rather than a
+tab, so several of them are a layout instead of a stack: you can watch four
+agents work at once, put each one beside the thing it is working on, and connect
+a sticky to whichever needs it. Nothing in the app knows they are agents — they
+are shells, and an agent is only what you happened to run in one.
+
 ## The one thing to understand first
 
 A page served from the internet **may not** talk to `localhost`. Chrome's Local
@@ -296,8 +309,9 @@ is ever copy-pasted with real values in it.
 | `SCROLLBACK_BYTES` | `204800` | Replayed to any client that connects, so a reopened embed shows recent history rather than a blank cursor. |
 | `ALLOWED_ROOT` | your home dir | Which directories `/api/browse` will list, and which a new session may *start* in. Not a sandbox: it is a real login shell, so `cd /` works from the first prompt. |
 | `HOST` | `127.0.0.1` | Interface to bind. Leave it alone. Anything reachable that is not loopback gets a shell — see [Security](#security). |
+| `ALLOWED_HOSTS` | unset | Comma-separated `host:port` values the server will accept in an incoming Host header, beyond loopback and the bound `HOST`. For the authenticating-proxy setup in [Security](#security): the proxy forwards the Host it was reached at, and without it listed here the server's own Host check refuses the request. |
 | `TRUST_PROXY` | unset | `1` if TLS terminates at a proxy in front. |
-| `CORS_ALLOWED_ORIGINS` | unset | Extra allowed origins, comma-separated. |
+| `CORS_ALLOWED_ORIGINS` | unset | Extra origins to trust beyond the server's own and the two Vite dev ports it ships against — comma-separated. Not needed for `localhost`/`127.0.0.1` generally: those are only trusted on this server's own `PORT`, not on any port, so another local dev server does not get this API's CORS for free. |
 | `EMBED_ORIGINS` | unset | Where you published the embed, e.g. `https://you.github.io`. Required for live terminals; no default, because opening a session is what authorises keystrokes. |
 
 Frontend: `VITE_WRAPPER_URL` if you host the app and the wrapper somewhere

@@ -45,6 +45,30 @@
   // Same origin as the relay's headless iframe, so a channel reaches it. The
   // relay owns the state; this page only renders it and sends decisions back.
   var bc = new BroadcastChannel('mt-relay-approval');
+
+  // The relay stamps sessionStorage with its own instance id on every load
+  // (see INSTANCE in relay.html). sessionStorage is shared by same-origin
+  // iframes within one tab and NOT across tabs, so reading it here — at the
+  // moment each message is sent or received, rather than caching a copy from
+  // the first message seen — ties every message this panel exchanges to the
+  // relay actually running in THIS tab, not some other open board's relay
+  // that happens to share the origin. Read fresh each time because Miro
+  // reloads the relay iframe often and mints a new instance on each reload.
+  function relayInstance() {
+    try { return sessionStorage.getItem('mt-relay-instance'); } catch (e) { return null; }
+  }
+
+  // Stamps and sends a decision. If there is no relay instance in
+  // sessionStorage at all, there is nothing running in this tab to address
+  // the message to, so it is dropped rather than broadcast unscoped — an
+  // unscoped message is exactly the bug this whole change removes.
+  function post(msg) {
+    var instance = relayInstance();
+    if (!instance) return;
+    msg.relay = instance;
+    bc.postMessage(msg);
+  }
+
   var esc = function (s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
@@ -105,18 +129,33 @@
   document.addEventListener('click', function (e) {
     var t = e.target;
     if (!t || t.tagName !== 'BUTTON') return;
-    if (t.id === 'allow-all') { bc.postMessage({ type: 'allow-all' }); return; }
-    if (t.dataset.allow)    bc.postMessage({ type: 'decide', sid: t.dataset.allow, action: 'allow' });
-    if (t.dataset.deny)     bc.postMessage({ type: 'decide', sid: t.dataset.deny, action: 'deny' });
-    if (t.dataset.recreate) bc.postMessage({ type: 'decide', sid: t.dataset.recreate, action: 'recreate' });
-    if (t.dataset.revoke) bc.postMessage({ type: 'revoke', sid: t.dataset.revoke });
+    if (t.id === 'allow-all') { post({ type: 'allow-all' }); return; }
+    if (t.dataset.allow)    post({ type: 'decide', sid: t.dataset.allow, action: 'allow' });
+    if (t.dataset.deny)     post({ type: 'decide', sid: t.dataset.deny, action: 'deny' });
+    if (t.dataset.recreate) post({ type: 'decide', sid: t.dataset.recreate, action: 'recreate' });
+    if (t.dataset.revoke) post({ type: 'revoke', sid: t.dataset.revoke });
   });
 
   bc.onmessage = function (e) {
-    if (e.data && e.data.type === 'state') render(e.data);
+    var d = e.data;
+    if (!d || d.type !== 'state') return;
+    // Only render state broadcast by the relay running in this tab. Without
+    // this, this panel rendered `state` from every relay sharing the origin
+    // (one per open board tab), so a panel opened for tab B's terminal could
+    // show — and let you act on — tab A's pending requests.
+    if (d.relay !== relayInstance()) return;
+    render(d);
   };
-  bc.postMessage({ type: 'list' });
-  render({ pending: [], approved: [] });
+
+  // If this tab's relay has never minted an instance, nothing on this page
+  // can be scoped to it, so there is nothing to ask and nothing safe to post.
+  if (!relayInstance()) {
+    document.getElementById('pending').innerHTML =
+      '<p class="empty">No terminal relay is running in this tab.</p>';
+  } else {
+    render({ pending: [], approved: [] });
+    post({ type: 'list' });
+  }
 })();
 </script>
 </body>

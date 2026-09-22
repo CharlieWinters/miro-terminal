@@ -91,6 +91,27 @@
     hello: 'mt-relay:hello'
   };
 
+  // This relay's own identity for this tab.
+  //
+  // BroadcastChannel is scoped to the ORIGIN, not the tab, and the messages it
+  // carries had no relay identity on them. So with two boards open in two
+  // tabs (two relay iframes, same origin), a decide or allow-all clicked in
+  // tab A's approve.html was also processed by tab B's relay: allow-all
+  // approved everything pending in tab B that the person there never saw, and
+  // a plain decide … allow called setApproved even when nothing was pending
+  // in tab B. Stamping every channel message with this id, and ignoring
+  // anything that does not match, scopes the channel back down to one relay.
+  //
+  // Kept in sessionStorage rather than a closure variable because that is the
+  // one thing shared by same-origin iframes within a single tab and NOT
+  // across tabs — exactly the scope wanted here, and APPROVAL_KEY below
+  // already relies on the same property. Miro reloads this iframe often, so
+  // each reload mints a fresh INSTANCE and overwrites the key; that is fine,
+  // because approve.html re-reads the key at send time rather than caching it
+  // from the page load.
+  var INSTANCE = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
+  try { sessionStorage.setItem('mt-relay-instance', INSTANCE); } catch (e) {}
+
   // sid -> { ws, nonce, embedId, out, in, state, source, origin }
   var sessions = {};
 
@@ -139,6 +160,7 @@
   function approvalState() {
     return {
       type: 'state',
+      relay: INSTANCE,
       pending: Object.keys(pending).map(function (sid) {
         var r = pending[sid];
         return {
@@ -218,17 +240,24 @@
     }
 
     if (action === 'allow') {
+      // Only approve when a request for this sid was actually pending here.
+      // Before this check, the branch called setApproved unconditionally, so
+      // a decide … allow that reached this relay by mistake (see INSTANCE
+      // above — this used to happen across tabs sharing the channel) granted
+      // live mode for a session nobody at this machine had been asked about.
+      // Now that channel messages are filtered to this relay's own instance
+      // first, req should always be set here in practice; this stays as the
+      // real guard rather than trusting that filtering alone.
+      if (!req) { publishState(); render(); return; }
       setApproved(sid, true);
-      if (req) {
-        // Drive it ourselves rather than waiting to be asked again: the embed
-        // gives up retrying long before a person gets round to answering, but
-        // its listener stays attached, so a late ready still lands.
-        openSession(req.sid, req.embedId, req.source, req.origin,
-                    { cwd: req.cwd, name: req.name }).catch(function (err) {
-          post(req.source, req.origin,
-               { type: M.closed, v: 1, embedId: req.embedId, sid: sid, error: err.message });
-        });
-      }
+      // Drive it ourselves rather than waiting to be asked again: the embed
+      // gives up retrying long before a person gets round to answering, but
+      // its listener stays attached, so a late ready still lands.
+      openSession(req.sid, req.embedId, req.source, req.origin,
+                  { cwd: req.cwd, name: req.name }).catch(function (err) {
+        post(req.source, req.origin,
+             { type: M.closed, v: 1, embedId: req.embedId, sid: sid, error: err.message });
+      });
     } else {
       denied[sid] = true;
       if (req) {
@@ -246,6 +275,10 @@
     channel.onmessage = function (e) {
       var d = e.data;
       if (!d || typeof d !== 'object') return;
+      // Ignore anything not addressed to this relay instance. Without this,
+      // every relay sharing the origin (one per open board tab) processed
+      // every approve.html click, regardless of which tab's panel sent it.
+      if (d.relay !== INSTANCE) return;
       if (d.type === 'list') { publishState(); return; }
       if (d.type === 'decide') { decide(d.sid, d.action); return; }
       if (d.type === 'allow-all') {
