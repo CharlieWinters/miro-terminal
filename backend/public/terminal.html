@@ -24,7 +24,13 @@
          having was telling you which session and board you were looking at;
          that is a line, not a modal. -->
     <span id="identity" title="This terminal's session and board"></span>
+    <button id="token-help-btn" type="button" aria-expanded="false"
+            title="Board items you can type into this terminal">i</button>
   </div>
+  <!-- Populated on open, not on load: the list is mostly the connectors
+       attached to THIS embed right now, and reading the board costs a round
+       trip to the app iframe. -->
+  <div id="token-help" hidden></div>
   <div id="terminal-container"></div>
   
   <script type="module">
@@ -146,7 +152,12 @@
       statusText.textContent = text;
     }
 
-    (function showIdentity() {
+    /** The status line still starts from the URL, because it has to say
+     * something before anything has been read, and a label is allowed to be
+     * approximate. It is corrected the first time the board is actually read —
+     * see requestContext — so a renamed board stops showing its old name
+     * instead of disagreeing with [BOARD_NAME] on the same screen. */
+    function showIdentity() {
       const el = document.getElementById('identity');
       if (!el) return;
       const bits = [];
@@ -154,7 +165,8 @@
       if (currentSettings.boardName) bits.push(currentSettings.boardName);
       bits.push(currentEffectiveSid.slice(0, 8));
       el.textContent = bits.join(' · ');
-    })();
+    }
+    showIdentity();
 
     function showError(message) {
       setStatus('error', message);
@@ -457,12 +469,19 @@
       }
 
       function requestOpen() {
+        // cwd and name are hints for one case only: the session is gone (the
+        // server restarted) and the person at the machine chooses to recreate
+        // it. The relay ignores both otherwise, and never acts on either
+        // without a human clicking. They come from this page's URL, which is
+        // board content, so they are shown in the approval panel before
+        // anything uses them, and the server confines cwd to ALLOWED_ROOT.
         post({
           type: 'mt-relay:open',
           v: 1,
           sid: sessionId,
           embedId: embedId,
           cwd: currentSettings && currentSettings.cwd ? currentSettings.cwd : undefined,
+          name: name || undefined,
         });
       }
 
@@ -654,6 +673,20 @@
       };
 
       function connect() {
+        // Tear the previous transport down first. Each one registers a window
+        // message listener in connect() and only removes it in close(), so a
+        // reconnect that skipped this left the old listener attached — and the
+        // next frame from the relay was then handled once per listener. Typing
+        // one character showed it six times, which is the initial connection
+        // plus maxReconnectAttempts.
+        //
+        // It took the approval panel to make this visible. A close used to mean
+        // a genuine disconnect and was rare; now every refusal while somebody
+        // decides is a close, so the budget is spent in seconds and the leak
+        // compounds before anyone has clicked anything.
+        if (currentTransport) {
+          try { currentTransport.close(); } catch (e) {}
+        }
         transport =
           TRANSPORT_MODE === 'relay'
             ? createRelayTransport(sessionId, transportHandlers)
@@ -914,10 +947,127 @@
         });
       }
 
+      /**
+       * The token list, read rather than documented.
+       *
+       * Which [LABEL]s exist is a property of the connectors attached to THIS
+       * embed, so no fixed help text can answer it — and the terminal is the
+       * one place you would think to ask, having nothing else on screen. The
+       * built-ins are listed for completeness; the labelled ones, with a
+       * preview of what they currently hold, are the point.
+       */
+      function setupTokenHelp() {
+        const btn = document.getElementById('token-help-btn');
+        const panel = document.getElementById('token-help');
+        if (!btn || !panel) return;
+
+        const esc = (v) => String(v == null ? '' : v)
+          .replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        const preview = (v) => {
+          const t = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+          return t.length > 70 ? t.slice(0, 70) + '…' : t;
+        };
+
+        // Values behind the buttons, by index, so a token's text never has to
+        // survive a trip through an HTML attribute.
+        let insertable = [];
+
+        function rows(pairs, empty) {
+          if (!pairs.length) return '<p class="none">' + empty + '</p>';
+          return '<dl>' + pairs.map(([k, v]) => {
+            const i = insertable.push(v) - 1;
+            return '<dt><button class="ins" data-i="' + i +
+              '" title="Insert this value at the cursor">' + esc(k) + '</button></dt>' +
+              '<dd>' + esc(preview(v) || '—') + '</dd>';
+          }).join('') + '</dl>';
+        }
+
+        const FOOTER =
+          '<p><b>Click a token to insert its value</b> where your cursor is. Typing the ' +
+          'token and pressing Enter expands it too, but that has to replace the whole ' +
+          'line, and a full-screen program — an agent, an editor — edits its own input ' +
+          'and may not cooperate. Clicking just types the text, so anything accepts it.</p>' +
+          '<p>Label a connector by double-clicking the line on the board, then use its ' +
+          'caption in brackets. A caption starting with "link" gives the item\u2019s board ' +
+          'link instead of its text.</p>';
+
+        function draw(connectedBody, builtinBody) {
+          panel.innerHTML = '<h4>Connected to this terminal</h4>' + connectedBody +
+            (builtinBody ? '<h4>Always available</h4>' + builtinBody : '') + FOOTER;
+        }
+
+        /** Types the value in, exactly as if the operator had.
+         *
+         * No Enter to intercept and no line to reconstruct, which is the whole
+         * point: the Enter path has to guess what is on a line it cannot read
+         * and then replace it, and every program does its own line editing. */
+        function insertAtCursor(raw) {
+          const text = sanitiseSubstitution(raw);
+          if (!text || !currentTransport || !currentTransport.isOpen()) return;
+          // Keep the mirror in step — this is indistinguishable from typing.
+          inputBuffer = inputBuffer.slice(0, cursor) + text + inputBuffer.slice(cursor);
+          cursor += text.length;
+          currentTransport.send({ type: 'input', data: text });
+          close();
+        }
+
+        async function open() {
+          panel.hidden = false;
+          btn.setAttribute('aria-expanded', 'true');
+          insertable = [];
+          draw('<p class="none">reading the board…</p>', '');
+          try {
+            const ctx = await requestContext();
+            insertable = [];
+            const connected = Object.keys(ctx.named || {}).sort()
+              .map((k) => ['[' + k + ']', ctx.named[k]]);
+            if (ctx.input) connected.unshift(['[INPUT]', ctx.input]);
+
+            const built = tokensFrom(ctx);
+            const builtins = [
+              ['[VIEWPORT]', built.VIEWPORT],
+              ['[BOARD_NAME]', built.BOARD_NAME],
+              ['[BOARD_URL]', built.BOARD_URL],
+            ].filter(([, v]) => v && String(v).indexOf('[no-') !== 0);
+
+            draw(rows(connected, 'none connected to this terminal'),
+                 rows(builtins, 'nothing to show'));
+          } catch (e) {
+            insertable = [];
+            draw('<p class="none">could not read the board from here</p>', '');
+          }
+        }
+
+        function close() {
+          panel.hidden = true;
+          btn.setAttribute('aria-expanded', 'false');
+          if (currentTerm) { try { currentTerm.focus(); } catch (e) {} }
+        }
+
+        panel.addEventListener('click', (e) => {
+          const b = e.target.closest('button[data-i]');
+          if (!b) return;
+          const v = insertable[Number(b.dataset.i)];
+          if (v != null) insertAtCursor(String(v));
+        });
+
+        btn.addEventListener('click', () => (panel.hidden ? open() : close()));
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && !panel.hidden) close();
+        });
+      }
+      setupTokenHelp();
+
       async function requestContext() {
+        // One shape, everywhere. This function rebuilds its result rather than
+        // passing the reply through, so a field added at the far end is dropped
+        // here unless it is named — which is exactly how boardName and boardUrl
+        // first arrived as [no-board-name].
+        const EMPTY = { input: '', named: {}, viewport: null, boardName: '', boardUrl: '' };
+
         if (!embedId) {
           console.warn('No embedId – cannot fetch context');
-          return { input: '', named: {}, viewport: null };
+          return Object.assign({}, EMPTY);
         }
 
         // Preferred path: ask the app iframe, which can read the board. Falls
@@ -926,7 +1076,16 @@
         // flow, with no app iframe listening.
         try {
           const ctx = await askBridge({ type: 'mt:ctx-request' }, 'mt:ctx');
-          const result = { input: ctx.input || '', named: ctx.named || {}, viewport: ctx.viewport || null };
+          const result = {
+            input: ctx.input || '', named: ctx.named || {}, viewport: ctx.viewport || null,
+            boardName: ctx.boardName || '', boardUrl: ctx.boardUrl || '',
+          };
+          // Free correction: we have just been told the board's real name, so
+          // stop showing whatever the URL was stamped with.
+          if (result.boardName && result.boardName !== currentSettings.boardName) {
+            currentSettings.boardName = result.boardName;
+            showIdentity();
+          }
           lastContextFetch = { at: new Date().toISOString(), ...result, via: 'app-iframe' };
           console.log('[context] via app iframe: input=', result.input.length, 'char(s), named=', Object.keys(result.named));
           return result;
@@ -940,7 +1099,7 @@
         // reaching the server's would be a public-to-loopback request — the one
         // thing that is categorically blocked.
         if (!sameOriginApi) {
-          return { input: '', named: {}, viewport: null };
+          return Object.assign({}, EMPTY);
         }
 
         // Signal that this embed needs context; Miro app polls and will push.
@@ -959,6 +1118,8 @@
         let input = data.input || '';
         let named = data.named || {};
         let viewport = data.viewport || null;
+        let boardName = data.boardName || '';
+        let boardUrl = data.boardUrl || '';
 
         // If viewport not yet pushed, give Miro app time to respond then retry once.
         if (!viewport) {
@@ -969,12 +1130,14 @@
             input = data.input || '';
             named = data.named || {};
             viewport = data.viewport || null;
+            boardName = data.boardName || '';
+            boardUrl = data.boardUrl || '';
           }
         }
 
-        lastContextFetch = { at: new Date().toISOString(), input, named, viewport, via: 'http-relay' };
+        lastContextFetch = { at: new Date().toISOString(), input, named, viewport, boardName, boardUrl, via: 'http-relay' };
         console.log('Fetched context: embedId=', embedId, 'input=', input.length, 'char(s), named=', Object.keys(named), 'viewport=', viewport ? 'yes' : 'no');
-        return { input, named, viewport };
+        return { input, named, viewport, boardName, boardUrl };
       }
 
       // Browser console debug: run __terminalInputDebug() to inspect [INPUT]/[LABEL] context
@@ -1049,40 +1212,68 @@
         }
         return output;
       }
-      function expandSyncVariables(input) {
+      /** Everything resolvable, from the one place that can resolve it.
+       *
+       * The board tokens used to be read from this page's own URL, stamped at
+       * embed creation — so a renamed board kept its old name forever, and an
+       * embed made before those parameters existed had no board identity at
+       * all. They come from the app iframe now, alongside the connected items,
+       * which is the only surface with a working SDK and was being asked
+       * anyway. That also means there is no longer any such thing as a token
+       * answerable without reading the board, so the sync/async split is gone.
+       *
+       * [BOARD_ID] and [SELECTED_ITEMS] are retired. The id is in the URL if it
+       * is ever wanted, and the selection was never available inside an embed —
+       * it only ever expanded to a placeholder saying so. */
+      function tokensFrom(ctx) {
+        return {
+          INPUT: sanitiseSubstitution(ctx.input) || '[no-connected-docs]',
+          VIEWPORT: ctx.viewport && typeof ctx.viewport === 'object'
+            ? JSON.stringify({ x: ctx.viewport.x, y: ctx.viewport.y,
+                               width: ctx.viewport.width, height: ctx.viewport.height })
+            : '[no-viewport]',
+          BOARD_NAME: sanitiseSubstitution(ctx.boardName) || '[no-board-name]',
+          BOARD_URL: sanitiseSubstitution(ctx.boardUrl) || '[no-board-url]',
+        };
+      }
+
+      /** The angle-bracket spellings these used to have.
+       *
+       * [INPUT] was <input> once and was changed so that connected-item tokens
+       * all looked alike; the board tokens were left behind, so the syntax you
+       * had to remember depended on which kind of thing you were asking for.
+       * They are all brackets now.
+       *
+       * The old spellings still resolve, deliberately and undocumented. Nothing
+       * persists them — they are typed at a prompt, not stored on the board —
+       * so this is purely for muscle memory, and it is worth the few lines
+       * because an unrecognised <name> does not sit there looking wrong: the
+       * shell reads it as a redirect. */
+      const LEGACY_ANGLE_TOKENS = {
+        '<current_board>': 'BOARD_URL', '<board_name>': 'BOARD_NAME',
+        '<viewport>': 'VIEWPORT', '<input>': 'INPUT',
+      };
+      function rewriteLegacyTokens(input) {
         let output = input;
-        
-        // Use current settings for board info
-        const { boardUrl, boardId, boardName } = currentSettings;
-        
-        // Replace <current_board> with full Miro board URL (brackets = shell-safe)
-        output = output.replace(/<current_board>/g, boardUrl || '[no-board-url]');
-        
-        // Replace <board_id> with just the board ID
-        output = output.replace(/<board_id>/g, boardId || '[no-board-id]');
-        
-        // Replace <board_name> with board name
-        output = output.replace(/<board_name>/g, boardName || '[no-board-name]');
-        
-        // Replace <selected_items> - not available in embed context
-        output = output.replace(/<selected_items>/g, '[selection-not-available]');
-        
-        if (output !== input) {
-          console.log('Sync variable expansion:', { input, output });
-        }
-        
+        Object.keys(LEGACY_ANGLE_TOKENS).forEach(function (old) {
+          output = output.split(old).join('[' + LEGACY_ANGLE_TOKENS[old] + ']');
+        });
         return output;
       }
+
+
 
       /**
        * Sync expansion plus safe placeholders for async vars. Use when we must not
        * send raw <viewport> or [INPUT]/[LABEL] to the shell (e.g. fallback on error).
        */
-      function expandSyncVariablesSafe(input) {
-        let output = expandSyncVariables(input);
-        output = output.replace(/<viewport>/gi, '[no-viewport]');
-        output = output.replace(/\[INPUT\]/g, '[no-connected-docs]');
-        return output;
+      /** Used only when the board cannot be read: fill the built-ins with
+       * placeholders rather than let a raw token reach the shell. */
+      function expandUnresolved(input, why) {
+        return expandNamedTokens(input, {
+          INPUT: '[' + why + ']', VIEWPORT: '[' + why + ']',
+          BOARD_NAME: '[' + why + ']', BOARD_URL: '[' + why + ']',
+        });
       }
 
       /**
@@ -1090,49 +1281,31 @@
        * Returns a promise that resolves with the fully expanded string
        */
       async function expandVariables(input) {
-        const hasNamedTokens = input.search(NAMED_TOKEN_PATTERN) !== -1;
-        const needsContext = /<viewport>/i.test(input) || hasNamedTokens;
-        let output = expandSyncVariables(input);
+        const rewritten = rewriteLegacyTokens(input);
+        let output = rewritten;
 
-        if (needsContext) {
-          try {
-            const { input: connectedText, named, viewport } = await requestContext();
-
-            if (/<viewport>/i.test(output)) {
-              const viewportStr = viewport && typeof viewport === 'object'
-                ? JSON.stringify({ x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height })
-                : '[no-viewport]';
-              output = output.replace(/<viewport>/gi, viewportStr);
-            }
-            // INPUT is a built-in token (the unlabelled-items blob); an explicit
-            // connector caption literally named "INPUT" takes priority over it.
-            const lookup = { INPUT: sanitiseSubstitution(connectedText) || '[no-connected-docs]' };
-            Object.keys(named || {}).forEach(function (k) {
-              lookup[k] = sanitiseSubstitution(named[k]);
-            });
-            output = expandNamedTokens(output, lookup);
-          } catch (error) {
-            console.error('Failed to fetch context:', error);
-            output = output.replace(/\[INPUT\]/g, '[error-fetching-input]');
-            output = output.replace(/<viewport>/gi, '[error-fetching-viewport]');
-          }
+        try {
+          const ctx = await requestContext();
+          // One lookup, one pass. A connector caption wins over a built-in of
+          // the same name, which is how [INPUT] has always behaved.
+          const lookup = tokensFrom(ctx);
+          Object.keys(ctx.named || {}).forEach(function (k) {
+            lookup[k] = sanitiseSubstitution(ctx.named[k]);
+          });
+          output = expandNamedTokens(output, lookup);
+        } catch (error) {
+          console.error('Failed to fetch context:', error);
+          output = expandUnresolved(output, 'could-not-read-board');
         }
 
         if (output !== input) {
           console.log('Variable expansion:', { input, output });
         }
-
         return output;
       }
 
-      // Check if input contains variables: <variable_name> or [LABEL]/[INPUT]
       function containsVariables(input) {
-        return /<[a-z_]+>/i.test(input) || input.search(NAMED_TOKEN_PATTERN) !== -1;
-      }
-
-      // Check if input contains async variables that need fetching
-      function containsAsyncVariables(input) {
-        return /<viewport>/i.test(input) || input.search(NAMED_TOKEN_PATTERN) !== -1;
+        return rewriteLegacyTokens(input).search(/\[([A-Za-z][A-Za-z0-9_]*)\]/) !== -1;
       }
 
       // Track if we're currently processing an async expansion
@@ -1152,6 +1325,22 @@
        * is still not shell-quoted, and quoting is still the operator's job, but
        * it is now a visible risk rather than a silent one. */
       let awaitingConfirm = false;
+
+      /** Where the next character lands in inputBuffer.
+       *
+       * inputBuffer is a mirror of the line the shell is editing, rebuilt from
+       * keystrokes, because nothing can read the real one back. A mirror that
+       * only ever appends is right exactly until the cursor moves. */
+      let cursor = 0;
+
+      /** Control sequences that move the cursor without altering the line.
+       * Values are a delta, or 'home'/'end'. */
+      const CURSOR_MOVES = {
+        '\x1b[D': -1, '\x1bOD': -1,          // Left
+        '\x1b[C': 1,  '\x1bOC': 1,           // Right
+        '\x1b[H': 'home', '\x1bOH': 'home', '\x1b[1~': 'home', '\x01': 'home',
+        '\x1b[F': 'end',  '\x1bOF': 'end',  '\x1b[4~': 'end',  '\x05': 'end',
+      };
 
       // Handle terminal input with variable expansion
       term.onData(async (data) => {
@@ -1173,46 +1362,31 @@
           if (awaitingConfirm) {
             awaitingConfirm = false;
             inputBuffer = '';
+            cursor = 0;
             transport.send({ type: 'input', data: '\r' });
             return;
           }
-          // Check if we need to expand variables
+          // One path now: every token needs the board read, so there is no
+          // longer a cheaper branch to take.
           if (containsVariables(inputBuffer)) {
-            // Check if we have async variables that need fetching
-            if (containsAsyncVariables(inputBuffer)) {
-              isProcessingAsync = true;
+            isProcessingAsync = true;
+            try {
+              let expanded;
               try {
-                const expanded = await expandVariables(inputBuffer);
-
-                // Replace the line with the expansion and leave it there.
-                transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
-                transport.send({ type: 'input', data: expanded });
-                inputBuffer = expanded;
-                awaitingConfirm = true;
-                return;
+                expanded = await expandVariables(inputBuffer);
               } catch (error) {
                 console.error('Error expanding variables:', error);
-                // Never send raw <...> to shell (causes redirection parse errors).
-                // Clear line and send safe expansion (async vars become placeholders).
-                const fallback = expandSyncVariablesSafe(inputBuffer);
-                transport.send({ type: 'input', data: '\x15' });
-                transport.send({ type: 'input', data: fallback });
-                inputBuffer = fallback;
-                awaitingConfirm = true;
-                return;
-              } finally {
-                isProcessingAsync = false;
+                expanded = expandUnresolved(rewriteLegacyTokens(inputBuffer), 'could-not-read-board');
               }
-            } else {
-              // Sync-only variables (safe expand so we never send raw <viewport>/[INPUT] to shell)
-              const expanded = expandSyncVariablesSafe(inputBuffer);
-
               // Replace the line with the expansion and leave it there.
               transport.send({ type: 'input', data: '\x15' }); // Ctrl+U
               transport.send({ type: 'input', data: expanded });
               inputBuffer = expanded;
+              cursor = expanded.length;
               awaitingConfirm = true;
               return;
+            } finally {
+              isProcessingAsync = false;
             }
           } else {
             // No variables, just send Enter
@@ -1221,19 +1395,46 @@
           
           // Reset buffer
           inputBuffer = '';
+          cursor = 0;
         } else if (data === '\x7f' || data === '\b') {
-          // Backspace - remove last character from buffer
-          inputBuffer = inputBuffer.slice(0, -1);
+          // Backspace - delete before the cursor, not off the end.
+          if (cursor > 0) {
+            inputBuffer = inputBuffer.slice(0, cursor - 1) + inputBuffer.slice(cursor);
+            cursor--;
+          }
           transport.send({ type: 'input', data });
         } else if (data.charCodeAt(0) >= 32 || data === '\t') {
-          // Printable character or tab - add to buffer
-          inputBuffer += data;
+          // Printable - insert AT the cursor. Appending was wrong as soon as
+          // anything moved the cursor, which is most of the time in a TUI.
+          inputBuffer = inputBuffer.slice(0, cursor) + data + inputBuffer.slice(cursor);
+          cursor += data.length;
+          transport.send({ type: 'input', data });
+        } else if (CURSOR_MOVES[data] !== undefined) {
+          // Moving the cursor does not change the line, so the mirror survives.
+          //
+          // This is the whole of the bug where a token stopped expanding once an
+          // agent was running. Every control sequence used to clear the buffer,
+          // and an arrow key is a control sequence — so at a plain prompt, where
+          // you type straight through, expansion worked, and inside a TUI, where
+          // you arrow around constantly, Enter found an empty buffer and sent
+          // the line through untouched. It failed silently and only in the case
+          // people actually use.
+          cursor = CURSOR_MOVES[data] === 'home' ? 0
+            : CURSOR_MOVES[data] === 'end' ? inputBuffer.length
+            : Math.max(0, Math.min(inputBuffer.length, cursor + CURSOR_MOVES[data]));
+          transport.send({ type: 'input', data });
+        } else if (data === '\x0b') {
+          inputBuffer = inputBuffer.slice(0, cursor);   // Ctrl+K
           transport.send({ type: 'input', data });
         } else {
-          // Control characters (Ctrl+C, etc.) - send directly, reset buffer.
-          // Ctrl+C on a pending expansion abandons it, so stop expecting a
-          // confirming Enter.
+          // Everything else changes the line in a way this cannot follow —
+          // Ctrl+C, Ctrl+U, Ctrl+W, and history recall on Up/Down, where the
+          // shell replaces the line with text we never saw. Drop the mirror
+          // rather than keep a wrong one: a missed expansion is recoverable,
+          // and expanding against a stale buffer would rewrite the line with
+          // something the operator never typed.
           inputBuffer = '';
+          cursor = 0;
           awaitingConfirm = false;
           transport.send({ type: 'input', data });
         }

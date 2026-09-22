@@ -35,8 +35,15 @@ for (const file of ['terminal.html', 'styles.css']) {
   await cp(from, `${OUT}/terminal-wrapper/${file}`);
 }
 
+// App icons. These have to be here even though one of the two apps is served
+// from localhost: Miro renders the toolbar on its own origin, so it fetches the
+// icon from there, and a public page may not read a loopback address. An icon
+// hosted next to the relay would simply never load.
+await cp('../icons', `${OUT}/icons`, { recursive: true });
+
 const app = await readdir(`${OUT}/app`);
 const wrapper = await readdir(`${OUT}/terminal-wrapper`);
 console.log(`staged ${OUT}/`);
 console.log(`  app/             ${app.join(', ')}`);
 console.log(`  terminal-wrapper/ ${wrapper.join(', ')}`);
+console.log(`  icons/           ${(await readdir(`${OUT}/icons`)).join(', ')}`);

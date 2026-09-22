@@ -226,3 +226,59 @@ body {
   text-overflow: ellipsis;
   max-width: 45%;
 }
+
+/* The token help affordance.
+ *
+ * Board items reach the terminal as [INPUT], [LABEL] and [LINK_x], and until
+ * now the only way to learn that was the README — from inside a terminal on a
+ * board, with no way to know which labels this particular embed even has. The
+ * list is per-embed, so it has to be read rather than documented. */
+#token-help-btn {
+  margin-left: 8px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1px solid #5a5a5a;
+  background: transparent;
+  color: #cccccc;
+  font: italic 600 10px/1 Georgia, serif;
+  cursor: pointer;
+  padding: 0;
+}
+#token-help-btn:hover { background: #3c3c3c; border-color: #8a8a8a; }
+#token-help-btn[aria-expanded="true"] { background: #0e639c; border-color: #0e639c; color: #fff; }
+
+#token-help {
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+  color: #cccccc;
+  font-size: 11px;
+  padding: 10px 12px;
+  max-height: 45%;
+  overflow-y: auto;
+}
+#token-help h4 { margin: 0 0 6px; font-size: 11px; color: #9cdcfe; font-weight: 600; }
+#token-help h4 + h4 { margin-top: 12px; }
+#token-help dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+#token-help dt { font-family: ui-monospace, Menlo, monospace; color: #ce9178; white-space: nowrap; }
+#token-help dd { margin: 0; opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#token-help p { margin: 8px 0 0; opacity: 0.6; line-height: 1.5; }
+#token-help .none { opacity: 0.5; font-style: italic; }
+
+/* A token in the help panel is a button: clicking types its value in at the
+ * cursor, which is the path that works regardless of what is running. */
+#token-help button.ins {
+  font: inherit;
+  font-family: ui-monospace, Menlo, monospace;
+  color: #ce9178;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin: -1px -4px;
+  cursor: pointer;
+  text-align: left;
+}
+#token-help button.ins:hover,
+#token-help button.ins:focus-visible { background: #3c3c3c; border-color: #5a5a5a; outline: none; }

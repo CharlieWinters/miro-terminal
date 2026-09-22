@@ -37,11 +37,9 @@ scopes:
 redirectUris:
   - https://YOUR-USER.github.io/miro-terminal/app/
 
-# No icon is shipped. Miro's settings form may require one to save the
-# manifest; a placeholder URL just 404s, so host a real file and uncomment.
-# icons:
-#   - src: https://YOUR-USER.github.io/miro-terminal/icon.svg
-#     size: 24
+icons:
+  - src: https://YOUR-USER.github.io/miro-terminal/icons/terminal.svg
+    size: 24
 
 # When the user clicks the app icon, the headless (sdkUri) iframe loads and
 # opens the spawner panel on the developer's own machine — or, on first run

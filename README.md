@@ -188,7 +188,13 @@ terminal embed with a connector, then use it as a variable:
 | `[INPUT]` | every uncaptioned connector's item, newline-joined |
 | `[LABEL]` | the item whose connector caption is `LABEL` |
 | `[LINK_1]` | that item's board link rather than its content |
-| `viewport`, `board_id`, `board_name` | board context |
+| `[VIEWPORT]`, `[BOARD_NAME]`, `[BOARD_URL]` | board context, read live from the board |
+
+Every token is `[BRACKETED]`, connected items and board context alike. The
+angle-bracket spellings some of these used to have still resolve, but are not
+documented and will go. The terminal's **i** button lists what the terminal in
+front of you can actually expand, including the labels on its own connectors,
+which is the part no fixed list can tell you.
 
 The label lives on the **connector's caption** — double-click the line to add
 one — never on the item, so an item's own text is never parsed or rewritten.
@@ -271,6 +277,7 @@ miro-terminal/
     public/terminal.html  the terminal UI, served here AND published publicly
     public/spawner.html   starts sessions, browses folders
     public/relay.html     the second app: holds sockets for live embeds
+  icons/                  both app icons, published to Pages (see below)
   app-manifest.yaml       app one
   app-manifest-relay.yaml app two
   ARCHITECTURE.md         why each piece is where it is

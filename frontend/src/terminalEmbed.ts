@@ -59,6 +59,8 @@ export function buildMiroEmbedUrl(
 interface ConnectedContext {
   input: string;
   named: Record<string, string>;
+  boardName: string;
+  boardUrl: string;
 }
 
 /** Map of embedId → Miro widget ID for looking up which embed sent a message */
@@ -177,7 +179,13 @@ async function fetchConnectedContext(widgetId: string): Promise<ConnectedContext
     }
   }
 
-  return { input: inputParts.join('\n'), named };
+  const boardName = (boardInfo as { id: string; title?: string }).title || boardId;
+  return {
+    input: inputParts.join('\n'),
+    named,
+    boardName,
+    boardUrl: `https://miro.com/app/board/${boardId}/`,
+  };
 }
 
 /** The terminal iframe and this panel/headless app live in separate Miro
@@ -192,7 +200,13 @@ async function pushContextToServer(terminalBase: string, embedId: string, widget
     await fetch(`${terminalBase}/api/context/${encodeURIComponent(embedId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: context.input, named: context.named, viewport }),
+      body: JSON.stringify({
+        input: context.input,
+        named: context.named,
+        viewport,
+        boardName: context.boardName,
+        boardUrl: context.boardUrl,
+      }),
     });
   } catch (error) {
     console.error('[Terminal] Error pushing context to server:', error);

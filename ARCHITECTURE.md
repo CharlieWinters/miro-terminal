@@ -209,14 +209,32 @@ The original mechanism, for reference:
    | `[INPUT]` | Content of every connector **with no caption**, newline-joined — the item's text if the Web SDK can read it (sticky/text/shape), otherwise its board link |
    | `[LABEL]` (e.g. `[FRONTEND_PROMPT]`) | The content of whichever connected item's connector is captioned `LABEL` |
    | `[LINK_1]`, `[LINK_2]`, ... (or any caption starting with "link") | That connector's item's board link, not its content — an explicit opt-in per connector |
-   | `viewport` | Current viewport `{x, y, width, height}` as JSON |
-   | `board_id` / `board_name` / `current_board` | Board identity |
-   | `selected_items` | Placeholder only — selection isn't available inside an embed |
+   | `[VIEWPORT]` | Current viewport `{x, y, width, height}` as JSON |
+   | `[BOARD_NAME]` / `[BOARD_URL]` | Board identity, read from the SDK at expansion time |
 
    `[INPUT]` used to be the angle-bracket `<input>` — replaced with the
    bracket syntax so every connected-item variable uses one consistent form
    (`[INPUT]`, `[LABEL]`, `[LINK_x]`), rather than special-casing the
-   unlabelled-items blob as the odd one out. `INPUT` is a built-in token name;
+   unlabelled-items blob as the odd one out. The board tokens were missed by
+   that change and kept their angle brackets for a while, so which syntax you
+   needed depended on which kind of thing you were asking for; they are all
+   brackets now, resolved by one lookup in one pass rather than by three
+   mechanisms. The old spellings still work, undocumented, because an
+   unrecognised `<name>` is not inert at a shell prompt — it is a redirect.
+
+   Board identity used to come from query parameters stamped into the embed's
+   URL at creation, which was a workaround for having no way to ask the board
+   from inside a terminal. The app iframe answers `mt:ctx-request` now, so it
+   supplies the board's name and URL alongside the connected items. A URL is
+   frozen at creation: a renamed board kept its old name for the life of the
+   embed, and an embed made before those parameters existed had no board
+   identity at all. It also means no token is answerable without reading the
+   board, so the sync/async split in `terminal.html` is gone.
+
+   `[BOARD_ID]` and `[SELECTED_ITEMS]` were retired with it — the id is part of
+   `[BOARD_URL]`, and selection has never been readable inside an embed.
+
+   `INPUT` is a built-in token name;
    an explicit connector caption literally named `INPUT` overrides it (checked
    in `terminal.html`'s `expandVariables`).
 

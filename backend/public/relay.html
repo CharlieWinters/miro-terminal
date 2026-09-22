@@ -59,10 +59,6 @@
   // is what authorises keystrokes. Leaving it at the localhost default means
   // published embeds simply cannot reach the relay — a closed door rather than
   // an open one, which is the right way round for a default.
-  // Which origins may ask this relay to open a session — i.e. where the embed
-  // is published. Fetched from the terminal server, same-origin.
-  //
-  // Read from this app's own URL first, then from the terminal server.
   //
   // The sdkUri query parameter does arrive — measured 18 Sep 2026, correcting
   // an earlier note here that guessed it might be a stale frame rather than
@@ -126,29 +122,147 @@
     render();
   }
 
-  /** Asked once per session. A native dialog on purpose: it is drawn by the
-   * browser, names the origin asking, and cannot be dressed up by anything on
-   * the board. Denial is remembered for this attempt only, so a mistaken no is
-   * one reload away from being asked again. */
+  /** Requests waiting on a decision: sid -> { sid, embedId, source, origin }.
+   *
+   * This was a window.confirm at first, which was wrong twice over. Joining a
+   * board with several terminals on it meant a queue of blocking dialogs, one
+   * per session, before anything rendered. And confirm() stops the event loop,
+   * so the embeds' retries piled up behind it and released in a burst — which
+   * is what turned a latent race in openSession into eight sockets on one PTY.
+   *
+   * A panel instead: it lists every waiting terminal at once, can be answered
+   * in any order or all together, and blocks nothing while it is open. */
+  var pending = {};
   var denied = {};
-  function approve(sid, embedId, origin) {
-    if (isApproved(sid)) return true;
-    if (denied[sid]) return false;
-    var ok = window.confirm(
-      'A terminal on this board is asking to go live.\n\n' +
-      'Session: ' + sid.slice(0, 12) + '\n' +
-      'Embed: ' + (embedId || 'unnamed') + '\n' +
-      'Asked by: ' + origin + '\n\n' +
-      'Allowing this lets that page send keystrokes to this shell until you ' +
-      'close this tab or revoke it on the relay page.\n\n' +
-      'Allow?'
-    );
-    if (ok) setApproved(sid, true); else denied[sid] = true;
-    return ok;
+  var panelOpenAt = 0;
+
+  function approvalState() {
+    return {
+      type: 'state',
+      pending: Object.keys(pending).map(function (sid) {
+        var r = pending[sid];
+        return {
+          sid: sid, embedId: r.embedId, origin: r.origin,
+          // 'missing' means the shell is gone — almost always because the
+          // terminal server was restarted, which kills every PTY it owns.
+          // Those get Recreate rather than Allow.
+          missing: Boolean(r.missing), cwd: r.cwd || null, name: r.name || null
+        };
+      }),
+      approved: approvedSids()
+    };
+  }
+
+  var channel = null;
+  try { channel = new BroadcastChannel('mt-relay-approval'); } catch (e) {}
+  function publishState() { if (channel) channel.postMessage(approvalState()); }
+
+  /** Records a request and puts the panel in front of the person at the machine.
+   * Re-opening on every retry would fight whatever they are doing, so the panel
+   * is only raised once every few seconds; the request itself is always kept. */
+  function requestApproval(sid, embedId, source, origin, hints) {
+    var known = Object.prototype.hasOwnProperty.call(pending, sid);
+    requestApproval.wasKnown = known;
+    hints = hints || {};
+    pending[sid] = {
+      sid: sid, embedId: embedId, source: source, origin: origin,
+      cwd: hints.cwd || null, name: hints.name || null, missing: Boolean(hints.missing)
+    };
+    publishState();
+    render();
+    var now = Date.now();
+    if (!known && now - panelOpenAt > 5000) {
+      panelOpenAt = now;
+      try {
+        if (window.miro && miro.board && miro.board.ui) {
+          miro.board.ui.openPanel({ url: 'approve.html' });
+        }
+      } catch (e) { /* panel refused; the relay page still lists the request */ }
+    }
+  }
+
+  /** action: 'allow' | 'deny' | 'recreate'.
+   *
+   * Recreate is the one path that may bring a session into existence, and it
+   * exists only here: a board frame can cause a request to be parked, never to
+   * be granted. Restarting the terminal server kills every shell it owns, and
+   * before this the relay would quietly start a new one under the same id for
+   * whoever asked — which is exactly the capability decision 2a removed. This
+   * puts it back behind a person, on their own machine, with the directory it
+   * will use shown to them first. */
+  function decide(sid, action) {
+    var req = pending[sid];
+    delete pending[sid];
+
+    if (action === 'recreate') {
+      if (!req) { publishState(); render(); return; }
+      setApproved(sid, true);
+      var body = { sid: sid };
+      if (req.cwd) body.cwd = req.cwd;
+      if (req.name) body.name = req.name;
+      fetch('/api/pty/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(function (res) {
+        if (!res.ok) throw new Error('terminal server refused: ' + res.status);
+        return openSession(req.sid, req.embedId, req.source, req.origin,
+                           { cwd: req.cwd, name: req.name });
+      }).catch(function (err) {
+        post(req.source, req.origin,
+             { type: M.closed, v: 1, embedId: req.embedId, sid: sid, error: err.message });
+      });
+      publishState();
+      render();
+      return;
+    }
+
+    if (action === 'allow') {
+      setApproved(sid, true);
+      if (req) {
+        // Drive it ourselves rather than waiting to be asked again: the embed
+        // gives up retrying long before a person gets round to answering, but
+        // its listener stays attached, so a late ready still lands.
+        openSession(req.sid, req.embedId, req.source, req.origin,
+                    { cwd: req.cwd, name: req.name }).catch(function (err) {
+          post(req.source, req.origin,
+               { type: M.closed, v: 1, embedId: req.embedId, sid: sid, error: err.message });
+        });
+      }
+    } else {
+      denied[sid] = true;
+      if (req) {
+        post(req.source, req.origin, {
+          type: M.closed, v: 1, embedId: req.embedId, sid: sid,
+          error: 'the person at this machine declined live mode for this session'
+        });
+      }
+    }
+    publishState();
+    render();
+  }
+
+  if (channel) {
+    channel.onmessage = function (e) {
+      var d = e.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'list') { publishState(); return; }
+      if (d.type === 'decide') { decide(d.sid, d.action); return; }
+      if (d.type === 'allow-all') {
+        // Only the ones that need permission. Recreating a shell is never
+        // something to do in bulk by accident.
+        Object.keys(pending).forEach(function (sid) {
+          if (!pending[sid].missing) decide(sid, 'allow');
+        });
+        return;
+      }
+      if (d.type === 'revoke') { window.mtRevoke(d.sid); publishState(); return; }
+    };
   }
 
   window.mtRevoke = function (sid) {
     setApproved(sid, false);
+    delete pending[sid];
     var s = sessions[sid];
     if (s) {
       s.stale = true;
@@ -210,11 +324,22 @@
    * PTY survives on the server and replays its scrollback on connect, so a
    * reconnecting embed gets a correct screen rather than a partial one.
    */
-  async function openSession(sid, embedId, source, origin) {
-    // Ask the person at the machine, before anything else happens. Nothing
-    // below this line is reached for a session they have not agreed to.
-    if (!approve(sid, embedId, origin)) {
-      throw new Error('the person at this machine has not allowed live mode for this session');
+  async function openSession(sid, embedId, source, origin, hints) {
+    hints = hints || {};
+    // Nothing below this line is reached for a session the person at this
+    // machine has not agreed to. An undecided request is parked and surfaced in
+    // the approval panel; when it is answered, decide() calls back in here.
+    if (!isApproved(sid)) {
+      if (denied[sid]) {
+        throw new Error('the person at this machine declined live mode for this session');
+      }
+      requestApproval(sid, embedId, source, origin, hints);
+      // Say it once. Every reply here is a close as far as the embed is
+      // concerned, and a close costs it a reconnect, so repeating this on each
+      // retry burned its whole budget while the person was still reading the
+      // panel. Silence just leaves its own retry timer running.
+      if (requestApproval.wasKnown) return;
+      throw new Error('waiting for permission on the host\'s screen');
     }
 
     var existing = sessions[sid];
@@ -258,15 +383,57 @@
     //
     // cwd is no longer forwarded, and is no longer meaningful: nothing is being
     // created, so there is nothing to set a directory on.
-    var res = await fetch('/api/pty/' + encodeURIComponent(sid) + '/attach', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    if (res.status === 404) {
-      throw new Error('no such session on this machine — create it from the spawner first');
+    // Claim the slot BEFORE the first await, not after the socket exists.
+    //
+    // The three guards above read sessions[sid], and this entry used to be
+    // assigned only once the socket had been built — so every `open` that
+    // arrived while the fetch below was in flight saw nothing, passed all three
+    // guards, and opened a socket of its own. The embed retries `open` until it
+    // sees `ready`, so that window was hit routinely: sockets accumulated
+    // against one PTY, every one of them replaying scrollback and echoing input.
+    //
+    // The approval prompt made it far worse. confirm() blocks the event loop,
+    // so a burst of retries piles up behind it and releases together the moment
+    // the dialog is dismissed. Reserving synchronously is what closes the
+    // window: the next caller in that burst sees state 'connecting' for its own
+    // source and returns.
+    var entry = {
+      ws: null, nonce: null, embedId: embedId, out: 0, inbound: 0,
+      state: 'connecting', source: source, origin: origin
+    };
+    sessions[sid] = entry;
+    render();
+
+    var session;
+    try {
+      var res = await fetch('/api/pty/' + encodeURIComponent(sid) + '/attach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.status === 404) {
+        // The shell is gone, which in practice means the terminal server was
+        // restarted: PTYs are child processes of it and the session map is in
+        // memory, so nothing survives. The relay will not quietly start a new
+        // one — that is the capability decision 2a removed — so this becomes a
+        // request the person at the machine can answer with Recreate.
+        if (sessions[sid] === entry) { delete sessions[sid]; }
+        requestApproval(sid, embedId, source, origin, {
+          cwd: hints.cwd, name: hints.name, missing: true
+        });
+        throw new Error('this session no longer exists — recreate it from the relay panel');
+      }
+      if (!res.ok) throw new Error('terminal server refused: ' + res.status);
+      session = await res.json();
+    } catch (err) {
+      // Give the reservation back, or a failed attach would block every later
+      // attempt behind a 'connecting' entry that will never resolve.
+      if (sessions[sid] === entry) { delete sessions[sid]; render(); }
+      throw err;
     }
-    if (!res.ok) throw new Error('terminal server refused: ' + res.status);
-    var session = await res.json();
+
+    // Superseded while the fetch was in flight.
+    if (entry.stale || sessions[sid] !== entry) return;
+
     // The session was already running; that is now the only case there is.
     var existed = true;
 
@@ -275,12 +442,8 @@
     // content. Re-issued on every open, since embeds reload.
     var nonce = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
     var ws = new WebSocket(session.wsUrl);
-
-    var entry = {
-      ws: ws, nonce: nonce, embedId: embedId, out: 0, inbound: 0,
-      state: 'connecting', source: source, origin: origin
-    };
-    sessions[sid] = entry;
+    entry.nonce = nonce;
+    entry.ws = ws;
     render();
 
     ws.onopen = function () {
@@ -380,10 +543,12 @@
       // Exact target origin, never a wildcard. The reply to an `open` carries
       // the nonce that authorises keystrokes, and the only reason it was ever
       // wildcarded was to reach a caller whose origin read as "null".
-      // d.cwd is ignored, and no longer read: the relay cannot create a
-      // session, so a working directory from a board frame has nothing to act
-      // on and no business being honoured.
-      openSession(d.sid, d.embedId || '', event.source, event.origin)
+      // d.cwd and d.name are hints, carried only so that a session whose shell
+      // has died can be recreated in the directory it was created in. Nothing
+      // acts on either without a person clicking Recreate, and the panel shows
+      // the directory first, because both come from board content.
+      openSession(d.sid, d.embedId || '', event.source, event.origin,
+                  { cwd: d.cwd, name: d.name })
         .catch(function (err) {
           post(event.source, event.origin,
                { type: M.closed, v: 1, embedId: d.embedId, sid: d.sid, error: err.message });
