@@ -319,6 +319,7 @@ miro-terminal/
   app-manifest.yaml       app one
   app-manifest-relay.yaml app two
   ARCHITECTURE.md         why each piece is where it is
+  REVIEWING.md            how to security-review this, and what to distrust
 ```
 
 ## Troubleshooting
