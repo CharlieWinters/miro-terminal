@@ -277,6 +277,7 @@ miro-terminal/
     public/terminal.html  the terminal UI, served here AND published publicly
     public/spawner.html   starts sessions, browses folders
     public/relay.html     the second app: holds sockets for live embeds
+  icons/                  both app icons, published to Pages (see below)
   app-manifest.yaml       app one
   app-manifest-relay.yaml app two
   ARCHITECTURE.md         why each piece is where it is

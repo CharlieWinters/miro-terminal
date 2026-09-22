@@ -27,6 +27,14 @@
 appName: Miro Terminal relay
 sdkVersion: SDK_V2
 
+# Served from Pages, not from this app's own origin, which is the one thing
+# about it worth reading twice. Miro draws the toolbar on its own page, so it
+# fetches the icon from there — and a public page may not read a loopback
+# address. An icon sitting next to relay.html would simply never load.
+icons:
+  - src: https://YOUR-USER.github.io/miro-terminal/icons/relay.svg
+    size: 24
+
 sdkUri: https://localhost:3001/relay.html?embedOrigins=https://YOUR-USER.github.io
 
 # None. It never touches the board.
