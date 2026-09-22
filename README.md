@@ -15,6 +15,19 @@ in it](docs/tutorial.gif)
 permissions panel, and then running an agent inside the embed — 55 seconds,
 unedited.*
 
+![Four terminals on one board, each running a different coding agent](docs/multiple-agents.gif)
+
+*And there is no reason for them all to be the same thing. Four terminals on one
+board — Claude Code, Gemini, OpenAI Codex, and opencode driving a local Qwen3
+through Ollama — each a separate shell with its own working directory and its
+own scrollback on the board.*
+
+That is the part worth understanding. A terminal here is a widget rather than a
+tab, so several of them are a layout instead of a stack: you can watch four
+agents work at once, put each one beside the thing it is working on, and connect
+a sticky to whichever needs it. Nothing in the app knows they are agents — they
+are shells, and an agent is only what you happened to run in one.
+
 ## The one thing to understand first
 
 A page served from the internet **may not** talk to `localhost`. Chrome's Local
