@@ -142,9 +142,9 @@ Express + `node-pty` + `ws`, unchanged from `miro-ide`'s `terminal-server`:
 
 | Method | Path                          | What |
 | ------ | ----------------------------- | --- |
-| POST   | `/api/pty/start`              | `{ sid?, cwd?, name? }` → creates/reuses a PTY session, returns `{ sid, url, wsUrl }` with a short-lived HMAC token. |
-| DELETE | `/api/pty/close`              | `?sid=…` — kills the session. |
-| GET    | `/health`                     | Liveness + session count. Unauthenticated. No longer what the wrapper uses for detection (see "Two iframes" above) — still useful for manual debugging/curl. |
+| POST   | `/api/pty/start`              | `{ sid?, cwd?, name? }` → creates/reuses a PTY session, returns `{ sid, url, wsUrl }` with a short-lived HMAC token. A `cwd` outside `ALLOWED_ROOT` gets no session at all: `400 { error: 'cwd is outside ALLOWED_ROOT' }`. |
+| DELETE | `/api/pty/close`              | `?sid=…&token=…` (token also accepted in the body) — kills the session. Same token as `/api/pty/:sid/input`; without a valid one this is `403`. |
+| GET    | `/health`                     | Liveness + session count. Unauthenticated. No longer what the wrapper uses for detection (see "The two things that cross a boundary" above) — still useful for manual debugging/curl. |
 | GET    | `/api/browse`                 | `?path=…` (optional, defaults to `ALLOWED_ROOT`) — lists subdirectories for the panel's working-directory picker. Same `safeJoin`/`ALLOWED_ROOT` scoping as `cwd`. Unauthenticated, like `/health`. |
 | POST   | `/api/pty/:sid/input`         | `{ token, data, pressEnter? }` — writes `data` straight into the session's PTY, as if typed. Always human-triggered from the panel's "Send to terminal"; nothing calls this automatically. |
 | POST   | `/api/context/:embedId`       | Pushes `{ input, named, viewport }` for an embed (see below). |
@@ -152,6 +152,13 @@ Express + `node-pty` + `ws`, unchanged from `miro-ide`'s `terminal-server`:
 | GET    | `/api/context/requests`       | Which `embedId`s the terminal has asked for context for. |
 | POST   | `/api/context/:embedId/request` | Terminal signals it wants context now. |
 | WS     | `/pty?sid=…&token=…`          | The live PTY stream, HMAC-token authenticated. Replays the session's buffered scrollback (see below) to every newly-connecting client before live output resumes. |
+
+None of the above is reached unless the request first clears two checks that
+sit ahead of routing rather than on any one row: the Host header has to name
+the server itself (loopback, the configured `HOST`, or an entry in
+`ALLOWED_HOSTS`), and, for anything past GET/HEAD/OPTIONS, an Origin header
+that is present has to be on the CORS allowlist. Both apply to the WebSocket
+upgrade too, checked before the token. See SECURITY.md for why.
 
 **Scrollback on reconnect.** Each session buffers its raw PTY output (capped
 at `SCROLLBACK_BYTES`, default 200 KB) and replays it — ANSI codes and all —
@@ -162,8 +169,13 @@ process is still alive server-side: once a session idles past `SESSION_TIMEOUT`
 or the backend process restarts, the shell (and its scrollback) is genuinely
 gone — there's nothing to resume, since nothing kept running.
 
-Sessions idle-timeout (`SESSION_TIMEOUT`, default 1h). `cwd` is confined to
-`ALLOWED_ROOT` (path-traversal-checked). See the README for full env var docs —
+Sessions idle-timeout (`SESSION_TIMEOUT`, default 1h). A `cwd` outside
+`ALLOWED_ROOT` is refused (path-traversal-checked) rather than quietly
+falling back to somewhere else — it used to fall back to the home directory,
+which is outside `ALLOWED_ROOT` whenever an operator points that elsewhere,
+defeating the confinement silently. With no `cwd` given at all, a session
+starts in `ALLOWED_ROOT` itself, which is the home directory by default, so
+default behaviour is unchanged. See the README for full env var docs —
 there is deliberately no `.env.example` file in this repo (nothing here should
 ever be copy-pasted with real values in it); copy the table from the README
 into your own local `.env` instead.
