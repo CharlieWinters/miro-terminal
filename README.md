@@ -59,13 +59,46 @@ change it, `ARCHITECTURE.md` explains why each piece is where it is.
   assume. (Pages cannot host a Miro app for the Marketplace, but it is fine for
   a private or self-hosted one.)
 
-## Setup
+## Install the published apps, or host your own
+
+There are two apps and you can either install the ones published from this
+repo or create your own. Installing skips steps 2 and 3 below entirely.
+
+| | Install | Who needs it |
+| --- | --- | --- |
+| **Miro Terminal** | [install](https://miro.com/app-install/?response_type=code&client_id=3458764683927525948&redirect_uri=%2Fapp-install%2Fconfirm%2F) | anyone who wants to read a terminal's history |
+| **Miro Terminal relay** | [install](https://miro.com/app-install/?response_type=code&client_id=3458764684032768431&redirect_uri=%2Fapp-install%2Fconfirm%2F) | only someone running a terminal of their own |
 
 **If you only want to read the terminals on a board someone else is running**,
-you need none of this. Install the **Miro Terminal** app on your team (step 3,
-first row) and stop there — no server, no certificates, no second app. History
-is read from the board itself. Everything below is for running a terminal of
-your own.
+install the first one and stop — no server, no certificates, no second app, and
+nothing below this line. History is read from the board itself.
+
+Three things to know before installing rather than forking.
+
+The first app is served from `charliewinters.github.io`, so you are trusting
+that hosting with the board scopes it asks for.
+
+The relay's App URL points at `localhost:3001`, which resolves to **your**
+machine, not to anyone else's. That is the whole design — the relay has to be
+local to reach your shell — but it means step 1 is not optional either way, and
+the port and the TLS have to match.
+
+And the embed those apps load is published at `charliewinters.github.io`, so
+your relay has to accept that origin. If live mode says the relay refuses it,
+put this in your own `backend/.env` and restart:
+
+```
+EMBED_ORIGINS=https://charliewinters.github.io
+```
+
+That is the one place installing rather than forking needs a line of
+configuration that forking would not.
+
+**Host your own** instead if you would rather nothing depended on someone
+else's hosting: fork, publish to your own Pages, and create your own two apps.
+That is what steps 2 and 3 are for.
+
+## Setup
 
 ### 1. Run the terminal server
 
@@ -103,6 +136,8 @@ need.
 
 ### 2. Publish the frontend
 
+> Skip this if you installed the published apps above.
+
 ```bash
 cd frontend
 npm install
@@ -117,6 +152,9 @@ then lives at `https://YOUR-USER.github.io/miro-terminal/app/index.html`.
 > will happily report success having shipped nothing.
 
 ### 3. Set up the two Miro apps
+
+> Skip this too if you installed the published apps — though read point 3, the
+> click-the-icon-once one, because it applies however you got the relay.
 
 **There are two, and live terminals need both.** This is the step people miss.
 
@@ -288,6 +326,7 @@ miro-terminal/
 | Symptom | Cause |
 | --- | --- |
 | Embed says it runs on another machine, but it's yours | Dev server not running, or the app's origin changed and the saved backend URL was lost with it |
+| Live mode refuses the origin, and you installed the published apps | The embed is published at `charliewinters.github.io`; set `EMBED_ORIGINS=https://charliewinters.github.io` in your `backend/.env` and restart |
 | Live mode says the relay refuses this origin | The origin is missing from the relay app's App URL (`?embedOrigins=…`), or from `EMBED_ORIGINS` in `backend/.env` if you use that instead — restart the server after changing `.env`. The relay page lists what it accepts |
 | Live mode asks permission every time | Expected once per session per browser session. Approving is remembered until you close the tab or hit Revoke on the relay page |
 | Live mode says no such session on this machine | The relay can no longer create sessions, only attach to ones you started. Create it from the spawner first |
