@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"
+     color="#050038" fill="none" stroke="currentColor" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round">
+  <!-- Miro Terminal relay. The same window, forwarding rather than prompting:
+       bytes pass through it and it keeps none of them. A sibling of
+       terminal.svg by the shared frame, told apart at 24px by the arrow.
+       Same currentColor-with-fallback reasoning as terminal.svg. -->
+  <rect x="2" y="4" width="20" height="16" rx="2.5"/>
+  <path d="M7 12h8"/>
+  <path d="M12 9l3 3-3 3"/>
+</svg>
