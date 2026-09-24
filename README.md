@@ -28,6 +28,26 @@ agents work at once, put each one beside the thing it is working on, and connect
 a sticky to whichever needs it. Nothing in the app knows they are agents — they
 are shells, and an agent is only what you happened to run in one.
 
+## Install
+
+An independent, unofficial project. Not affiliated with, endorsed by, or
+supported by Miro.
+
+**[Install "Miro Terminal" on your Miro team](https://miro.com/app-install/?response_type=code&client_id=3458764683927525948&redirect_uri=%2Fapp-install%2Fconfirm%2F)**
+
+The front door, and all most people need: it reads a terminal's history from the
+board. No server, no certificates, no second app.
+
+**[Install "Miro Terminal relay" on your Miro team](https://miro.com/app-install/?response_type=code&client_id=3458764684032768431&redirect_uri=%2Fapp-install%2Fconfirm%2F)**
+
+Only if you want to run a terminal of your own. It pairs with a terminal server
+on your own machine — [step 1](#1-run-the-terminal-server) — which is the one
+part nobody can host for you.
+
+Both are the versions published from this repo, so installing them skips steps 2
+and 3 of Setup. [Host your own](#installing-or-hosting-your-own) instead if you
+would rather nothing depended on someone else's hosting.
+
 ## The one thing to understand first
 
 A page served from the internet **may not** talk to `localhost`. Chrome's Local
@@ -77,21 +97,11 @@ change it, `ARCHITECTURE.md` explains why each piece is where it is.
   assume. (Pages cannot host a Miro app for the Marketplace, but it is fine for
   a private or self-hosted one.)
 
-## Install the published apps, or host your own
+## Installing, or hosting your own
 
-There are two apps and you can either install the ones published from this
-repo or create your own. Installing skips steps 2 and 3 below entirely.
-
-| | Install | Who needs it |
-| --- | --- | --- |
-| **Miro Terminal** | [install](https://miro.com/app-install/?response_type=code&client_id=3458764683927525948&redirect_uri=%2Fapp-install%2Fconfirm%2F) | anyone who wants to read a terminal's history |
-| **Miro Terminal relay** | [install](https://miro.com/app-install/?response_type=code&client_id=3458764684032768431&redirect_uri=%2Fapp-install%2Fconfirm%2F) | only someone running a terminal of their own |
-
-**If you only want to read the terminals on a board someone else is running**,
-install the first one and stop — no server, no certificates, no second app, and
-nothing below this line. History is read from the board itself.
-
-Three things to know before installing rather than forking.
+The [install links](#install) above use the apps published from this repo, which
+skips steps 2 and 3 below. Three things to know before taking that rather than
+forking.
 
 The first app is served from `charliewinters.github.io`, so you are trusting
 that hosting with the board scopes it asks for.
